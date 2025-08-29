@@ -17,19 +17,21 @@ builds:
       - -X github.com/boring-registry/boring-registry/version.Commit={{.Commit}}
       - -X github.com/boring-registry/boring-registry/version.Date={{.Date}}
 
-dockers:
-  - image_templates:
-      - "{{ .Env.ECR_REGISTRY }}/docker/prod/{{ .Env.IMAGE_REPOSITORY }}:{{ .Env.INTERNAL_VERSION }}"
+dockers_v2:
+  - image:
+      - "{{ .Env.ECR_REGISTRY }}/docker/prod/{{ .Env.IMAGE_REPOSITORY }}"
     dockerfile: Dockerfile
-    use: buildx
-    push: true
-    build_flag_templates:
-      - "--platform=linux/amd64,linux/arm64"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Env.INTERNAL_VERSION}}"
-      - "--label=org.opencontainers.image.source=https://github.com/confluentinc/boring-registry"
+    tags:
+      - "{{ .Env.INTERNAL_VERSION }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.title": "{{.ProjectName}}"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Env.INTERNAL_VERSION}}"
+      "org.opencontainers.image.source": "https://github.com/confluentinc/boring-registry"
 
 release:
   disable: true
@@ -43,3 +45,4 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
