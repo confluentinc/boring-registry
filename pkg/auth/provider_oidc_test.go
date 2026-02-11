@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/boring-registry/boring-registry/pkg/core"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -211,7 +213,26 @@ func TestOidcProviderVerify(t *testing.T) {
 
 		err = provider.Verify(context.Background(), "invalid.jwt.token")
 		assert.Error(t, err)
+		assert.True(t, errors.Is(err, core.ErrInvalidToken),
+			"OIDC verification failure should wrap core.ErrInvalidToken for 401 status code mapping")
 	})
+}
+
+func TestOidcProviderVerify_NonJWTRejection(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(nil, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	provider := &OidcProvider{
+		logger:             logger,
+		issuer:             "https://example.com",
+		acceptNonJWTTokens: false,
+	}
+
+	err := provider.Verify(context.Background(), "not-a-jwt-token")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "token is not in JWT format")
+	// Non-JWT rejection is a format error, not an OIDC verification failure,
+	// so it should NOT wrap ErrInvalidToken.
+	assert.False(t, errors.Is(err, core.ErrInvalidToken))
 }
 
 func TestNewOidcProvider(t *testing.T) {

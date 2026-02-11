@@ -139,6 +139,40 @@ func TestParseJWTClaims(t *testing.T) {
 				ClientID:  "",
 			},
 		},
+		{
+			name: "array aud claim",
+			claims: map[string]interface{}{
+				"iss":   "https://auth.example.com",
+				"email": "user@example.com",
+				"sub":   "user104",
+				"aud":   []string{"client1", "client2"},
+			},
+			wantUser: &audit.UserContext{
+				UserID:    "user@example.com",
+				UserEmail: "user@example.com",
+				UserName:  "",
+				Subject:   "user104",
+				Issuer:    "https://auth.example.com",
+				ClientID:  "client1,client2",
+			},
+		},
+		{
+			name: "single element array aud claim",
+			claims: map[string]interface{}{
+				"iss":   "https://auth.example.com",
+				"email": "user@example.com",
+				"sub":   "user105",
+				"aud":   []string{"client1"},
+			},
+			wantUser: &audit.UserContext{
+				UserID:    "user@example.com",
+				UserEmail: "user@example.com",
+				UserName:  "",
+				Subject:   "user105",
+				Issuer:    "https://auth.example.com",
+				ClientID:  "client1",
+			},
+		},
 	}
 
 	for _, tt := range tests {

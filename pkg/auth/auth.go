@@ -15,15 +15,35 @@ import (
 	"github.com/go-kit/kit/endpoint"
 )
 
+// audience handles the JWT "aud" claim which per RFC 7519 can be either
+// a single string or an array of strings.
+type audience string
+
+func (a *audience) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*a = audience(s)
+		return nil
+	}
+
+	var arr []string
+	if err := json.Unmarshal(b, &arr); err != nil {
+		return err
+	}
+
+	*a = audience(strings.Join(arr, ","))
+	return nil
+}
+
 type TokenClaims struct {
-	Issuer     string `json:"iss"`
-	Email      string `json:"email"`
-	Name       string `json:"name"`
-	GivenName  string `json:"given_name"`
-	FamilyName string `json:"family_name"`
-	Subject    string `json:"sub"`
-	ClientID   string `json:"aud"`
-	Username   string `json:"preferred_username"`
+	Issuer     string   `json:"iss"`
+	Email      string   `json:"email"`
+	Name       string   `json:"name"`
+	GivenName  string   `json:"given_name"`
+	FamilyName string   `json:"family_name"`
+	Subject    string   `json:"sub"`
+	ClientID   audience `json:"aud"`
+	Username   string   `json:"preferred_username"`
 }
 
 func parseJWTIssuer(token string) (string, error) {
@@ -90,7 +110,7 @@ func parseJWTClaims(token string) (*audit.UserContext, error) {
 		claims.FamilyName,
 		claims.Subject,
 		claims.Issuer,
-		claims.ClientID,
+		string(claims.ClientID),
 		claims.Username,
 	), nil
 }
@@ -116,6 +136,18 @@ func isLikelyJWT(token string) bool {
 	return len(parts) == 3
 }
 
+// logTokenAttrs returns slog attributes with token claim details for debugging auth failures.
+func logTokenAttrs(token string, baseAttrs ...any) []any {
+	if claims, err := parseJWTClaims(token); err == nil {
+		baseAttrs = append(baseAttrs,
+			slog.String("subject", claims.Subject),
+			slog.String("email", claims.UserEmail),
+			slog.String("client_id", claims.ClientID),
+		)
+	}
+	return baseAttrs
+}
+
 func Middleware(providers ...Provider) endpoint.Middleware {
 	return func(next endpoint.Endpoint) endpoint.Endpoint {
 		return func(ctx context.Context, request interface{}) (interface{}, error) {
@@ -136,8 +168,13 @@ func Middleware(providers ...Provider) endpoint.Middleware {
 							slog.Debug("found matching provider for issuer", slog.String("issuer", issuer))
 							err := matchingProvider.Verify(ctx, token)
 							if err != nil {
-								slog.Debug("failed to verify token with matching provider", slog.String("issuer", issuer), slog.String("err", err.Error()))
-								return nil, fmt.Errorf("failed to verify token: %w", err)
+								slog.Warn("failed to verify token with matching provider",
+									logTokenAttrs(token,
+										slog.String("issuer", issuer),
+										slog.String("err", err.Error()),
+									)...,
+								)
+								return nil, err
 							} else {
 								slog.Debug("successfully verified token with matching provider", slog.String("issuer", issuer))
 
@@ -174,7 +211,10 @@ func Middleware(providers ...Provider) endpoint.Middleware {
 						return next(ctx, request)
 					}
 				}
-				return nil, fmt.Errorf("failed to verify token: %w", lastError)
+				slog.Warn("all providers failed to verify token",
+					logTokenAttrs(token, slog.String("err", lastError.Error()))...,
+				)
+				return nil, fmt.Errorf("%w: %w", core.ErrInvalidToken, lastError)
 			} else {
 				return nil, fmt.Errorf("%w: request does not contain a token", core.ErrUnauthorized)
 			}
