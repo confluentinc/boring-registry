@@ -15,15 +15,35 @@ import (
 	"github.com/go-kit/kit/endpoint"
 )
 
+// audience handles the JWT "aud" claim which per RFC 7519 can be either
+// a single string or an array of strings.
+type audience string
+
+func (a *audience) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*a = audience(s)
+		return nil
+	}
+
+	var arr []string
+	if err := json.Unmarshal(b, &arr); err != nil {
+		return err
+	}
+
+	*a = audience(strings.Join(arr, ","))
+	return nil
+}
+
 type TokenClaims struct {
-	Issuer     string `json:"iss"`
-	Email      string `json:"email"`
-	Name       string `json:"name"`
-	GivenName  string `json:"given_name"`
-	FamilyName string `json:"family_name"`
-	Subject    string `json:"sub"`
-	ClientID   string `json:"aud"`
-	Username   string `json:"preferred_username"`
+	Issuer     string   `json:"iss"`
+	Email      string   `json:"email"`
+	Name       string   `json:"name"`
+	GivenName  string   `json:"given_name"`
+	FamilyName string   `json:"family_name"`
+	Subject    string   `json:"sub"`
+	ClientID   audience `json:"aud"`
+	Username   string   `json:"preferred_username"`
 }
 
 func parseJWTIssuer(token string) (string, error) {
@@ -90,7 +110,7 @@ func parseJWTClaims(token string) (*audit.UserContext, error) {
 		claims.FamilyName,
 		claims.Subject,
 		claims.Issuer,
-		claims.ClientID,
+		string(claims.ClientID),
 		claims.Username,
 	), nil
 }
