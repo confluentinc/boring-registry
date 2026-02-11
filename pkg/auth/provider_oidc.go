@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/boring-registry/boring-registry/pkg/audit"
+	"github.com/boring-registry/boring-registry/pkg/core"
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
@@ -64,7 +65,7 @@ func (o *OidcProvider) Verify(ctx context.Context, token string) error {
 
 	idToken, err := verifier.Verify(ctx, token)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", core.ErrInvalidToken, err)
 	}
 
 	userCtx, err := o.extractUserContext(idToken)
@@ -84,13 +85,13 @@ func (o *OidcProvider) Verify(ctx context.Context, token string) error {
 // extractUserContext extracts user information from OIDC token claims
 func (o *OidcProvider) extractUserContext(idToken *oidc.IDToken) (*audit.UserContext, error) {
 	var claims struct {
-		Email      string `json:"email"`
-		Name       string `json:"name"`
-		GivenName  string `json:"given_name"`
-		FamilyName string `json:"family_name"`
-		Subject    string `json:"sub"`
-		ClientID   string `json:"aud"`
-		Username   string `json:"preferred_username"`
+		Email      string   `json:"email"`
+		Name       string   `json:"name"`
+		GivenName  string   `json:"given_name"`
+		FamilyName string   `json:"family_name"`
+		Subject    string   `json:"sub"`
+		ClientID   audience `json:"aud"`
+		Username   string   `json:"preferred_username"`
 	}
 
 	if err := idToken.Claims(&claims); err != nil {
@@ -104,7 +105,7 @@ func (o *OidcProvider) extractUserContext(idToken *oidc.IDToken) (*audit.UserCon
 		claims.FamilyName,
 		claims.Subject,
 		o.issuer,
-		claims.ClientID,
+		string(claims.ClientID),
 		claims.Username,
 	), nil
 }

@@ -3,9 +3,14 @@ package auth
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"testing"
+
+	"github.com/boring-registry/boring-registry/pkg/core"
 
 	"github.com/go-kit/kit/auth/jwt"
 	"github.com/stretchr/testify/assert"
@@ -51,6 +56,56 @@ func createJWTWithIssuer(issuer string) string {
 	return fmt.Sprintf("%s.%s.%s", headerB64, payloadB64, signature)
 }
 
+func TestAudienceUnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected audience
+		wantErr  bool
+	}{
+		{
+			name:     "string value",
+			input:    `"client123"`,
+			expected: audience("client123"),
+		},
+		{
+			name:     "array of strings",
+			input:    `["client1","client2"]`,
+			expected: audience("client1,client2"),
+		},
+		{
+			name:     "single element array",
+			input:    `["client1"]`,
+			expected: audience("client1"),
+		},
+		{
+			name:     "empty array",
+			input:    `[]`,
+			expected: audience(""),
+		},
+		{
+			name:    "invalid type",
+			input:   `123`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var a audience
+			err := json.Unmarshal([]byte(tt.input), &a)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, a)
+			}
+		})
+	}
+}
+
 func TestParseJWTIssuer(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -87,6 +142,16 @@ func TestParseJWTIssuer(t *testing.T) {
 			token:       fmt.Sprintf("header.%s.signature", base64.RawURLEncoding.EncodeToString([]byte("invalid json"))),
 			expectedIss: "",
 			expectError: true,
+		},
+		{
+			name: "JWT with array aud claim",
+			token: createTestJWT(map[string]interface{}{
+				"iss": "https://example.com",
+				"sub": "user123",
+				"aud": []string{"client1", "client2"},
+			}),
+			expectedIss: "https://example.com",
+			expectError: false,
 		},
 	}
 
@@ -307,6 +372,9 @@ func TestAuthMiddleware(t *testing.T) {
 		_, err := Middleware(provider1, provider2)(nopEndpoint)(ctx, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to verify token")
+		assert.True(t, errors.Is(err, core.ErrInvalidToken),
+			"error should wrap core.ErrInvalidToken so GenericError maps to 401 instead of 500")
+		assert.Equal(t, http.StatusUnauthorized, core.GenericError(err))
 	})
 
 	t.Run("JWT with matching issuer succeeds even when other providers fail", func(t *testing.T) {
@@ -331,6 +399,51 @@ func TestAuthMiddleware(t *testing.T) {
 		ctx := context.WithValue(context.Background(), jwt.JWTContextKey, token)
 		_, err := Middleware(failingProvider, matchingProvider)(nopEndpoint)(ctx, nil)
 		assert.NoError(t, err)
+	})
+
+	t.Run("JWT with matching provider verification failure returns 401", func(t *testing.T) {
+		issuer := "https://example.com"
+		token := createJWTWithIssuer(issuer)
+
+		// Simulate an OIDC provider that matches by issuer but fails verification,
+		// returning an error wrapped with core.ErrInvalidToken (as OidcProvider.Verify now does).
+		failingMatchProvider := &mockOidcProvider{
+			mockProvider: &mockProvider{
+				name:   "failing-match",
+				issuer: issuer,
+				verifyFunc: func(ctx context.Context, token string) error {
+					return fmt.Errorf("%w: audience mismatch", core.ErrInvalidToken)
+				},
+			},
+		}
+
+		ctx := context.WithValue(context.Background(), jwt.JWTContextKey, token)
+		_, err := Middleware(failingMatchProvider)(nopEndpoint)(ctx, nil)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, core.ErrInvalidToken),
+			"error should wrap core.ErrInvalidToken so GenericError maps to 401 instead of 500")
+		assert.Equal(t, http.StatusUnauthorized, core.GenericError(err))
+	})
+
+	t.Run("JWT with all providers failing including fallback returns 401", func(t *testing.T) {
+		issuer := "https://example.com"
+		token := createJWTWithIssuer(issuer)
+
+		// No provider matches the issuer, so middleware falls through to trying all providers.
+		nonMatchingProvider := &mockOidcProvider{
+			mockProvider: &mockProvider{
+				name:          "non-matching",
+				issuer:        "https://other.com",
+				shouldSucceed: false,
+			},
+		}
+
+		ctx := context.WithValue(context.Background(), jwt.JWTContextKey, token)
+		_, err := Middleware(nonMatchingProvider)(nopEndpoint)(ctx, nil)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, core.ErrInvalidToken),
+			"error should wrap core.ErrInvalidToken so GenericError maps to 401 instead of 500")
+		assert.Equal(t, http.StatusUnauthorized, core.GenericError(err))
 	})
 }
 
@@ -373,6 +486,41 @@ func TestAuthMiddlewareWithStaticProvider(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLogTokenAttrs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid JWT includes claim attributes", func(t *testing.T) {
+		token := createTestJWT(map[string]interface{}{
+			"iss":   "https://example.com",
+			"sub":   "user123",
+			"email": "user@example.com",
+			"aud":   "client456",
+		})
+		baseAttrs := []any{slog.String("err", "some error")}
+		result := logTokenAttrs(token, baseAttrs...)
+		// Base attr (1) + subject, email, client_id (3) = 4
+		assert.Len(t, result, 4)
+	})
+
+	t.Run("non-JWT token returns only base attributes", func(t *testing.T) {
+		baseAttrs := []any{slog.String("err", "some error")}
+		result := logTokenAttrs("not-a-jwt", baseAttrs...)
+		assert.Len(t, result, 1)
+	})
+
+	t.Run("empty base attrs with valid JWT", func(t *testing.T) {
+		token := createTestJWT(map[string]interface{}{
+			"iss":   "https://example.com",
+			"sub":   "user123",
+			"email": "user@example.com",
+			"aud":   "client456",
+		})
+		result := logTokenAttrs(token)
+		// Only subject, email, client_id = 3
+		assert.Len(t, result, 3)
+	})
 }
 
 func nopEndpoint(ctx context.Context, request interface{}) (interface{}, error) {
