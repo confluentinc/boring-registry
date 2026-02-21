@@ -19,7 +19,7 @@ globs: "*.go"
 - Wrap errors with `fmt.Errorf("context: %w", err)` to preserve error chain for `errors.Is()`
 
 ## Testing
-- Tests use `testify/assert` and `testify/require`
+- Tests use `testify/assert`
 - Test files follow `*_test.go` naming in the same package
 - Storage tests (`pkg/storage/s3_test.go`) use mocks/stubs, not real cloud services
 - Mirror tests heavily use table-driven tests with subtests

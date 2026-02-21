@@ -30,7 +30,7 @@ version/             # Build version info (injected via ldflags)
 
 - **go-kit architecture**: Each domain (`module`, `provider`, `mirror`, `proxy`) follows the go-kit service/endpoint/transport pattern with logging middleware
 - **Storage interface composition**: `storage.Storage` composes `module.Storage`, `provider.Storage`, `mirror.Storage`, and `proxy.Storage` interfaces
-- **Auth provider chain**: Auth middleware tries issuer-matched OIDC provider first, then falls back to iterating all providers. Static tokens and OIDC/Okta cannot both be primary -- only one OIDC-type provider at a time
+- **Auth provider chain**: Auth middleware supports multiple OIDC providers (tries issuer-matched first, then falls back to iterating all providers). Static tokens are always evaluated alongside OIDC, but OIDC and Okta providers are mutually exclusive (only one OIDC-type provider can be configured at a time)
 - **Environment variable config**: All flags use `BORING_REGISTRY_` prefix with dashes converted to underscores (e.g., `--storage-s3-bucket` -> `BORING_REGISTRY_STORAGE_S3_BUCKET`)
 - **Audit logging**: Confluent addition -- logs auth events and registry access to S3 in batched JSON format
 
