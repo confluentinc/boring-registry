@@ -1,0 +1,26 @@
+# Vendored dependencies
+vendor/
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.tgz
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# mkdocs build output
+site/
+
+# Grafana dashboard (large JSON, not human-editable)
+helm/boring-registry-dashboard.json
+
+# Go sum (large, auto-generated)
+go.sum
