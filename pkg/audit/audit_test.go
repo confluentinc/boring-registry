@@ -475,7 +475,7 @@ func TestConfig_GetS3Config(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := tt.config.GetS3Config()
-			
+
 			if result.Bucket != tt.expected.Bucket {
 				t.Errorf("Expected bucket %q, got %q", tt.expected.Bucket, result.Bucket)
 			}
@@ -497,20 +497,20 @@ func TestConfig_GetS3Config(t *testing.T) {
 
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
-	
+
 	if !config.Enabled {
 		t.Error("Expected audit to be enabled by default")
 	}
-	
+
 	s3Config := config.GetS3Config()
 	if s3Config.BatchSize != 100 {
 		t.Errorf("Expected default batch size 100, got %d", s3Config.BatchSize)
 	}
-	
+
 	if s3Config.FlushInterval != 30*time.Second {
 		t.Errorf("Expected default flush interval 30s, got %v", s3Config.FlushInterval)
 	}
-	
+
 	if s3Config.Prefix != "audit-logs/" {
 		t.Errorf("Expected default prefix 'audit-logs/', got %q", s3Config.Prefix)
 	}
@@ -518,14 +518,14 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestNoOpAuditLogger(t *testing.T) {
 	logger := &NoOpAuditLogger{}
-	
+
 	event := &AuditEvent{
 		Timestamp: time.Now(),
 		Level:     "INFO",
 		Event:     EventAuthLogin,
 		Result:    ResultSuccess,
 	}
-	
+
 	logger.LogEvent(context.Background(), event)
 }
 
@@ -539,9 +539,9 @@ func (m *mockS3Client) PutObject(ctx context.Context, params *s3.PutObjectInput,
 	if m.shouldError {
 		return nil, fmt.Errorf("%s", m.errorMessage)
 	}
-	
+
 	m.putObjectCalls = append(m.putObjectCalls, *params)
-	
+
 	return &s3.PutObjectOutput{}, nil
 }
 
@@ -607,7 +607,7 @@ func TestCreateS3AuditLogger(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, err := CreateS3AuditLogger(context.Background(), tt.s3Client, tt.config)
-			
+
 			if tt.expectError {
 				if err == nil {
 					t.Error("Expected error but got none")
@@ -616,16 +616,16 @@ func TestCreateS3AuditLogger(t *testing.T) {
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("Unexpected error: %v", err)
 				return
 			}
-			
+
 			if logger == nil {
 				t.Error("Expected logger but got nil")
 			}
-			
+
 			if !tt.config.Enabled {
 				_, isNoOp := logger.(*NoOpAuditLogger)
 				if !isNoOp {
@@ -638,7 +638,7 @@ func TestCreateS3AuditLogger(t *testing.T) {
 
 func TestS3AuditLogger_Basic(t *testing.T) {
 	mockClient := &mockS3Client{}
-	
+
 	config := S3AuditConfig{
 		Bucket:        "test-audit-bucket",
 		Region:        "us-west-2",
@@ -646,13 +646,13 @@ func TestS3AuditLogger_Basic(t *testing.T) {
 		BatchSize:     2,
 		FlushInterval: 100 * time.Millisecond,
 	}
-	
+
 	logger, err := NewS3AuditLogger(mockClient, config)
 	if err != nil {
 		t.Fatalf("Failed to create S3 audit logger: %v", err)
 	}
 	defer logger.Close()
-	
+
 	// Log a single event
 	event := &AuditEvent{
 		Timestamp: time.Now(),
@@ -666,9 +666,9 @@ func TestS3AuditLogger_Basic(t *testing.T) {
 		SourceIP:  "192.168.1.1",
 		UserAgent: "TestAgent/1.0",
 	}
-	
+
 	logger.LogEvent(context.Background(), event)
-	
+
 	event2 := &AuditEvent{
 		Timestamp: time.Now(),
 		Level:     "INFO",
@@ -677,33 +677,33 @@ func TestS3AuditLogger_Basic(t *testing.T) {
 		Resource:  "test/module/aws/1.0.0",
 		Action:    ActionDownload,
 	}
-	
+
 	logger.LogEvent(context.Background(), event2)
-	
+
 	time.Sleep(200 * time.Millisecond)
 	if len(mockClient.putObjectCalls) != 1 {
 		t.Errorf("Expected 1 S3 PutObject call, got %d", len(mockClient.putObjectCalls))
 	}
-	
+
 	if len(mockClient.putObjectCalls) > 0 {
 		call := mockClient.putObjectCalls[0]
-		
+
 		if *call.Bucket != "test-audit-bucket" {
 			t.Errorf("Expected bucket 'test-audit-bucket', got %q", *call.Bucket)
 		}
-		
+
 		if !strings.Contains(*call.Key, "audit-logs/") {
 			t.Errorf("Expected key to contain 'audit-logs/', got %q", *call.Key)
 		}
-		
+
 		if !strings.Contains(*call.Key, "year=") {
 			t.Errorf("Expected key to contain partitioning, got %q", *call.Key)
 		}
-		
+
 		if *call.ContentType != "application/json" {
 			t.Errorf("Expected content type 'application/json', got %q", *call.ContentType)
 		}
-		
+
 		eventCount, exists := call.Metadata["event-count"]
 		if !exists {
 			t.Error("Expected 'event-count' in metadata")
@@ -715,7 +715,7 @@ func TestS3AuditLogger_Basic(t *testing.T) {
 
 func TestS3AuditLogger_TimeBasedFlush(t *testing.T) {
 	mockClient := &mockS3Client{}
-	
+
 	config := S3AuditConfig{
 		Bucket:        "test-audit-bucket",
 		Region:        "us-west-2",
@@ -723,22 +723,22 @@ func TestS3AuditLogger_TimeBasedFlush(t *testing.T) {
 		BatchSize:     100,
 		FlushInterval: 50 * time.Millisecond,
 	}
-	
+
 	logger, err := NewS3AuditLogger(mockClient, config)
 	if err != nil {
 		t.Fatalf("Failed to create S3 audit logger: %v", err)
 	}
 	defer logger.Close()
-	
+
 	event := &AuditEvent{
 		Timestamp: time.Now(),
 		Level:     "INFO",
 		Event:     EventAuthLogin,
 		Result:    ResultSuccess,
 	}
-	
+
 	logger.LogEvent(context.Background(), event)
-	
+
 	time.Sleep(100 * time.Millisecond)
 	if len(mockClient.putObjectCalls) != 1 {
 		t.Errorf("Expected 1 S3 PutObject call from time-based flush, got %d", len(mockClient.putObjectCalls))
