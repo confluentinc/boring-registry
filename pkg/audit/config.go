@@ -3,8 +3,8 @@ package audit
 import "time"
 
 type Config struct {
-	Enabled bool           `yaml:"enabled" json:"enabled"`
-	S3      S3AuditConfig  `yaml:"s3" json:"s3"`
+	Enabled bool          `yaml:"enabled" json:"enabled"`
+	S3      S3AuditConfig `yaml:"s3" json:"s3"`
 }
 
 func DefaultConfig() Config {
@@ -29,6 +29,6 @@ func (c *Config) GetS3Config() S3AuditConfig {
 	if config.Prefix == "" {
 		config.Prefix = "audit-logs/"
 	}
-	
+
 	return config
 }

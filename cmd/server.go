@@ -285,16 +285,16 @@ func serveMux(ctx context.Context) (*http.ServeMux, error) {
 
 func setupAuditLogger(ctx context.Context, auditConfig audit.Config) (audit.Logger, error) {
 	var s3Client audit.S3ClientInterface
-	
+
 	if auditConfig.Enabled && auditConfig.S3.Bucket != "" {
 		awsConfig, err := config.LoadDefaultConfig(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load AWS config: %w", err)
 		}
-		
+
 		s3Client = s3.NewFromConfig(awsConfig)
 	}
-	
+
 	return audit.CreateS3AuditLogger(ctx, s3Client, auditConfig)
 }
 
