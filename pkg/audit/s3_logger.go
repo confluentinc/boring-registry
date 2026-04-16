@@ -18,18 +18,18 @@ type S3ClientInterface interface {
 }
 
 type S3AuditLogger struct {
-	s3Client     S3ClientInterface
-	bucket       string
-	prefix       string
-	batchSize    int
+	s3Client      S3ClientInterface
+	bucket        string
+	prefix        string
+	batchSize     int
 	flushInterval time.Duration
-	logger       *slog.Logger
-	
-	eventBuffer  []*AuditEvent
-	bufferMutex  sync.Mutex
-	lastFlush    time.Time
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
+	logger        *slog.Logger
+
+	eventBuffer []*AuditEvent
+	bufferMutex sync.Mutex
+	lastFlush   time.Time
+	stopChan    chan struct{}
+	wg          sync.WaitGroup
 }
 
 type S3AuditConfig struct {
@@ -111,7 +111,7 @@ func (l *S3AuditLogger) flushBufferUnsafe(ctx context.Context) {
 
 	eventsToFlush := make([]*AuditEvent, len(l.eventBuffer))
 	copy(eventsToFlush, l.eventBuffer)
-	
+
 	l.eventBuffer = l.eventBuffer[:0]
 	l.lastFlush = time.Now()
 

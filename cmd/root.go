@@ -100,7 +100,7 @@ For GCS presigned URLs this SA needs the iam.serviceAccountTokenCreator role.`)
 	rootCmd.PersistentFlags().StringVar(&flagAzureStorageContainer, "storage-azure-container", "", "Azure Storage Container to use for the registry")
 	rootCmd.PersistentFlags().StringVar(&flagAzureStoragePrefix, "storage-azure-prefix", "", "Azure Storage prefix to use for the registry")
 	rootCmd.PersistentFlags().DurationVar(&flagAzureStorageSignedURLExpiry, "storage-azure-signedurl-expiry", 5*time.Minute, "Generate Azure Storage signed URL valid for X seconds.")
-	
+
 	rootCmd.PersistentFlags().BoolVar(&flagAuditEnabled, "audit-enabled", true, "Enable S3 audit logging")
 	rootCmd.PersistentFlags().StringVar(&flagAuditS3Bucket, "audit-s3-bucket", "", "S3 bucket for audit logs")
 	rootCmd.PersistentFlags().StringVar(&flagAuditS3Region, "audit-s3-region", "", "S3 region for audit logs (defaults to storage S3 region)")
