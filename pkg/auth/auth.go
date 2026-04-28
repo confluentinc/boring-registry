@@ -218,8 +218,6 @@ func Middleware(providers ...Provider) endpoint.Middleware {
 			} else {
 				return nil, fmt.Errorf("%w: request does not contain a token", core.ErrUnauthorized)
 			}
-
-			return nil, core.ErrUnauthorized
 		}
 	}
 }
