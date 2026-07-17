@@ -15,7 +15,7 @@ globs: ".semaphore/*.yml,.semaphore/*.yaml"
 - Do not manually modify these sections; they are overwritten by automation
 
 ## Build Details
-- Go version is set explicitly in CI with `sem-version go` (currently 1.23.10)
+- Go version is set explicitly in CI with `sem-version go` (currently 1.26.4)
 - Docker builds use `--build-arg` for VERSION, GIT_COMMIT, BUILD_TIMESTAMP (ldflags injection)
 - Images are signed after push with `sign-images` utility
 - Multi-arch manifests combine amd64 and arm64 images
