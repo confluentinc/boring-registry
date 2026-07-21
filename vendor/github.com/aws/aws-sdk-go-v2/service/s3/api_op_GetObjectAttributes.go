@@ -4,8 +4,6 @@ package s3
 
 import (
 	"context"
-	"fmt"
-	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	s3cust "github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -14,11 +12,12 @@ import (
 	"time"
 )
 
-// Retrieves all the metadata from an object without returning the object itself.
-// This operation is useful if you're interested only in an object's metadata.
+// Retrieves all of the metadata from an object without returning the object
+// itself. This operation is useful if you're interested only in an object's
+// metadata.
 //
 // GetObjectAttributes combines the functionality of HeadObject and ListParts . All
-// of the data returned with each of those individual calls can be returned with a
+// of the data returned with both of those individual calls can be returned with a
 // single call to GetObjectAttributes .
 //
 // Directory buckets - For directory buckets, you must make requests for this API
@@ -30,34 +29,43 @@ import (
 // about endpoints in Local Zones, see [Concepts for directory buckets in Local Zones]in the Amazon S3 User Guide.
 //
 // Permissions
-//
 //   - General purpose bucket permissions - To use GetObjectAttributes , you must
-//     have READ access to the object. The permissions that you need to use this
-//     operation depend on whether the bucket is versioned. If the bucket is versioned,
-//     you need both the s3:GetObjectVersion and s3:GetObjectVersionAttributes
-//     permissions for this operation. If the bucket is not versioned, you need the
-//     s3:GetObject and s3:GetObjectAttributes permissions. For more information, see [Specifying Permissions in a Policy]
-//     in the Amazon S3 User Guide. If the object that you request does not exist, the
-//     error Amazon S3 returns depends on whether you also have the s3:ListBucket
-//     permission.
+//     have READ access to the object.
 //
-//   - If you have the s3:ListBucket permission on the bucket, Amazon S3 returns an
-//     HTTP status code 404 Not Found ("no such key") error.
+// The other permissions that you need to use this operation depend on whether the
 //
-//   - If you don't have the s3:ListBucket permission, Amazon S3 returns an HTTP
-//     status code 403 Forbidden ("access denied") error.
+//	bucket is versioned and if a version ID is passed in the GetObjectAttributes
+//	request.
 //
-//   - Directory bucket permissions - To grant access to this API operation on a
-//     directory bucket, we recommend that you use the [CreateSession]CreateSession API operation
-//     for session-based authorization. Specifically, you grant the
-//     s3express:CreateSession permission to the directory bucket in a bucket policy
-//     or an IAM identity-based policy. Then, you make the CreateSession API call on
-//     the bucket to obtain a session token. With the session token in your request
-//     header, you can make API requests to this operation. After the session token
-//     expires, you make another CreateSession API call to generate a new session
-//     token for use. Amazon Web Services CLI or SDKs create session and refresh the
-//     session token automatically to avoid service interruptions when a session
-//     expires. For more information about authorization, see [CreateSession]CreateSession .
+//	- If you pass a version ID in your request, you need both the
+//	s3:GetObjectVersion and s3:GetObjectVersionAttributes permissions.
+//
+//	- If you do not pass a version ID in your request, you need the s3:GetObject
+//	and s3:GetObjectAttributes permissions.
+//
+// For more information, see [Specifying Permissions in a Policy]in the Amazon S3 User Guide.
+//
+// If the object that you request does not exist, the error Amazon S3 returns
+//
+//	depends on whether you also have the s3:ListBucket permission.
+//
+//	- If you have the s3:ListBucket permission on the bucket, Amazon S3 returns an
+//	HTTP status code 404 Not Found ("no such key") error.
+//
+//	- If you don't have the s3:ListBucket permission, Amazon S3 returns an HTTP
+//	status code 403 Forbidden ("access denied") error.
+//
+//	- Directory bucket permissions - To grant access to this API operation on a
+//	directory bucket, we recommend that you use the [CreateSession]CreateSession API operation
+//	for session-based authorization. Specifically, you grant the
+//	s3express:CreateSession permission to the directory bucket in a bucket policy
+//	or an IAM identity-based policy. Then, you make the CreateSession API call on
+//	the bucket to obtain a session token. With the session token in your request
+//	header, you can make API requests to this operation. After the session token
+//	expires, you make another CreateSession API call to generate a new session
+//	token for use. Amazon Web Services CLI or SDKs create session and refresh the
+//	session token automatically to avoid service interruptions when a session
+//	expires. For more information about authorization, see [CreateSession]CreateSession .
 //
 // If the object is encrypted with SSE-KMS, you must also have the
 //
@@ -75,11 +83,11 @@ import (
 // Request error. It's because the encryption method can't be changed when you
 // retrieve the object.
 //
-// If you encrypt an object by using server-side encryption with customer-provided
-// encryption keys (SSE-C) when you store the object in Amazon S3, then when you
-// retrieve the metadata from the object, you must use the following headers to
-// provide the encryption key for the server to be able to retrieve the object's
-// metadata. The headers are:
+// If you encrypted an object when you stored the object in Amazon S3 by using
+// server-side encryption with customer-provided encryption keys (SSE-C), then when
+// you retrieve the metadata from the object, you must use the following headers.
+// These headers provide the server with the encryption key required to retrieve
+// the object's metadata. The headers are:
 //
 //   - x-amz-server-side-encryption-customer-algorithm
 //
@@ -147,12 +155,15 @@ import (
 //
 // [ListParts]
 //
+// You must URL encode any signed header values that contain spaces. For example,
+// if your header value is my file.txt , containing two spaces after my , you must
+// URL encode this value to my%20%20file.txt .
+//
 // [Specifying server-side encryption with KMS for new object uploads]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-specifying-kms-encryption.html
 // [GetObjectLegalHold]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObjectLegalHold.html
 // [Concepts for directory buckets in Local Zones]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-lzs-for-directory-buckets.html
 // [ListParts]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListParts.html
 // [Server-Side Encryption (Using Customer-Provided Encryption Keys)]: https://docs.aws.amazon.com/AmazonS3/latest/dev/ServerSideEncryptionCustomerKeys.html
-// [CreateSession]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_CreateSession.html
 // [GetObjectTagging]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObjectTagging.html
 // [Specifying Permissions in a Policy]: https://docs.aws.amazon.com/AmazonS3/latest/dev/using-with-s3-actions.html
 // [RFC 7232]: https://tools.ietf.org/html/rfc7232
@@ -163,6 +174,8 @@ import (
 // [GetObjectRetention]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObjectRetention.html
 // [GetObject]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html
 // [Regional and Zonal endpoints for directory buckets in Availability Zones]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/endpoint-directory-buckets-AZ.html
+//
+// [CreateSession]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_CreateSession.html
 func (c *Client) GetObjectAttributes(ctx context.Context, params *GetObjectAttributesInput, optFns ...func(*Options)) (*GetObjectAttributesOutput, error) {
 	if params == nil {
 		params = &GetObjectAttributesInput{}
@@ -234,19 +247,24 @@ type GetObjectAttributesInput struct {
 	// status code 403 Forbidden (access denied).
 	ExpectedBucketOwner *string
 
-	// Sets the maximum number of parts to return.
+	// Sets the maximum number of parts to return. For more information, see [Uploading and copying objects using multipart upload in Amazon S3] in the
+	// Amazon Simple Storage Service user guide.
+	//
+	// [Uploading and copying objects using multipart upload in Amazon S3]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html
 	MaxParts *int32
 
 	// Specifies the part after which listing should begin. Only parts with higher
-	// part numbers will be listed.
+	// part numbers will be listed. For more information, see [Uploading and copying objects using multipart upload in Amazon S3]in the Amazon Simple
+	// Storage Service user guide.
+	//
+	// [Uploading and copying objects using multipart upload in Amazon S3]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html
 	PartNumberMarker *string
 
 	// Confirms that the requester knows that they will be charged for the request.
 	// Bucket owners need not specify this parameter in their requests. If either the
 	// source or destination S3 bucket has Requester Pays enabled, the requester will
-	// pay for corresponding charges to copy the object. For information about
-	// downloading objects from Requester Pays buckets, see [Downloading Objects in Requester Pays Buckets]in the Amazon S3 User
-	// Guide.
+	// pay for the corresponding charges. For information about downloading objects
+	// from Requester Pays buckets, see [Downloading Objects in Requester Pays Buckets]in the Amazon S3 User Guide.
 	//
 	// This functionality is not supported for directory buckets.
 	//
@@ -319,9 +337,12 @@ type GetObjectAttributesOutput struct {
 	ObjectSize *int64
 
 	// If present, indicates that the requester was successfully charged for the
-	// request.
+	// request. For more information, see [Using Requester Pays buckets for storage transfers and usage]in the Amazon Simple Storage Service user
+	// guide.
 	//
 	// This functionality is not supported for directory buckets.
+	//
+	// [Using Requester Pays buckets for storage transfers and usage]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/RequesterPaysBuckets.html
 	RequestCharged types.RequestCharged
 
 	// Provides the storage class information of the object. Amazon S3 returns this
@@ -348,9 +369,6 @@ type GetObjectAttributesOutput struct {
 }
 
 func (c *Client) addOperationGetObjectAttributesMiddlewares(stack *middleware.Stack, options Options) (err error) {
-	if err := stack.Serialize.Add(&setOperationInputMiddleware{}, middleware.After); err != nil {
-		return err
-	}
 	err = stack.Serialize.Add(&awsRestxml_serializeOpGetObjectAttributes{}, middleware.After)
 	if err != nil {
 		return err
@@ -359,17 +377,8 @@ func (c *Client) addOperationGetObjectAttributesMiddlewares(stack *middleware.St
 	if err != nil {
 		return err
 	}
-	if err := addProtocolFinalizerMiddlewares(stack, options, "GetObjectAttributes"); err != nil {
-		return fmt.Errorf("add protocol finalizers: %v", err)
-	}
 
 	if err = addlegacyEndpointContextSetter(stack, options); err != nil {
-		return err
-	}
-	if err = addSetLoggerMiddleware(stack, options); err != nil {
-		return err
-	}
-	if err = addClientRequestID(stack); err != nil {
 		return err
 	}
 	if err = addComputeContentLength(stack); err != nil {
@@ -381,19 +390,7 @@ func (c *Client) addOperationGetObjectAttributesMiddlewares(stack *middleware.St
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
-		return err
-	}
-	if err = addRawResponseToMetadata(stack); err != nil {
-		return err
-	}
 	if err = addRecordResponseTiming(stack); err != nil {
-		return err
-	}
-	if err = addSpanRetryLoop(stack, options); err != nil {
-		return err
-	}
-	if err = addClientUserAgent(stack, options); err != nil {
 		return err
 	}
 	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
@@ -402,16 +399,7 @@ func (c *Client) addOperationGetObjectAttributesMiddlewares(stack *middleware.St
 	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
-		return err
-	}
 	if err = addPutBucketContextMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
-		return err
-	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addIsExpressUserAgent(stack); err != nil {
@@ -423,13 +411,10 @@ func (c *Client) addOperationGetObjectAttributesMiddlewares(stack *middleware.St
 	if err = addOpGetObjectAttributesValidationMiddleware(stack); err != nil {
 		return err
 	}
-	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opGetObjectAttributes(options.Region), middleware.Before); err != nil {
+	if err = stack.Initialize.Add(newServiceMetadataMiddleware(options.Region, "GetObjectAttributes"), middleware.Before); err != nil {
 		return err
 	}
 	if err = addMetadataRetrieverMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addGetObjectAttributesUpdateEndpoint(stack, options); err != nil {
@@ -453,16 +438,7 @@ func (c *Client) addOperationGetObjectAttributesMiddlewares(stack *middleware.St
 	if err = addSerializeImmutableHostnameBucketMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = addSpanInitializeStart(stack); err != nil {
-		return err
-	}
-	if err = addSpanInitializeEnd(stack); err != nil {
-		return err
-	}
-	if err = addSpanBuildRequestStart(stack); err != nil {
-		return err
-	}
-	if err = addSpanBuildRequestEnd(stack); err != nil {
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
@@ -473,14 +449,6 @@ func (v *GetObjectAttributesInput) bucket() (string, bool) {
 		return "", false
 	}
 	return *v.Bucket, true
-}
-
-func newServiceMetadataMiddleware_opGetObjectAttributes(region string) *awsmiddleware.RegisterServiceMetadata {
-	return &awsmiddleware.RegisterServiceMetadata{
-		Region:        region,
-		ServiceID:     ServiceID,
-		OperationName: "GetObjectAttributes",
-	}
 }
 
 // getGetObjectAttributesBucketMember returns a pointer to string denoting a
