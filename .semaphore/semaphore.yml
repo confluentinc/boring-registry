@@ -30,7 +30,7 @@ blocks:
       jobs:
         - name: Test & Build
           commands:
-            - sem-version go 1.26.4
+            - sem-version go 1.27rc3
             - go test ./...
             - make build
 
