@@ -39,8 +39,11 @@ func init() {
 	// initialize experimental options
 	storageinternal.WithMetricExporter = withMetricExporter
 	storageinternal.WithMetricInterval = withMetricInterval
+	storageinternal.WithMeterProvider = withMeterProvider
 	storageinternal.WithReadStallTimeout = withReadStallTimeout
-	storageinternal.WithGRPCBidiReads = withGRPCBidiReads
+	storageinternal.WithDirectConnectivityEnforced = withDirectConnectivityEnforced
+	storageinternal.WithOtelMetrics = withOtelMetrics
+	storageinternal.WithOtelDebugMetrics = withOtelDebugMetrics
 }
 
 // getDynamicReadReqIncreaseRateFromEnv returns the value set in the env variable.
@@ -78,11 +81,16 @@ type storageConfig struct {
 	useJSONforReads        bool
 	readAPIWasSet          bool
 	disableClientMetrics   bool
+	enableOtelMetrics      bool
+	enableOtelDebugMetrics bool
 	metricExporter         *metric.Exporter
 	metricInterval         time.Duration
+	meterProvider          *metric.MeterProvider
 	manualReader           *metric.ManualReader
 	readStallTimeoutConfig *experimental.ReadStallTimeoutConfig
 	grpcBidiReads          bool
+	grpcAppendableUploads  bool
+	grpcDirectPathEnforced bool
 }
 
 // newStorageConfig generates a new storageConfig with all the given
@@ -101,6 +109,18 @@ func newStorageConfig(opts ...option.ClientOption) storageConfig {
 type storageClientOption interface {
 	option.ClientOption
 	ApplyStorageOpt(*storageConfig)
+}
+
+func withDirectConnectivityEnforced() option.ClientOption {
+	return &withDirectPathEnforced{}
+}
+
+type withDirectPathEnforced struct {
+	internaloption.EmbeddableAdapter
+}
+
+func (w *withDirectPathEnforced) ApplyStorageOpt(c *storageConfig) {
+	c.grpcDirectPathEnforced = true
 }
 
 // WithJSONReads is an option that may be passed to [NewClient].
@@ -201,6 +221,20 @@ type withTestMetricReaderConfig struct {
 	metricReader *metric.ManualReader
 }
 
+type withMeterProviderConfig struct {
+	internaloption.EmbeddableAdapter
+	// meter provider override
+	meterProvider *metric.MeterProvider
+}
+
+func withMeterProvider(provider *metric.MeterProvider) option.ClientOption {
+	return &withMeterProviderConfig{meterProvider: provider}
+}
+
+func (w *withMeterProviderConfig) ApplyStorageOpt(c *storageConfig) {
+	c.meterProvider = w.meterProvider
+}
+
 func withTestMetricReader(ex *metric.ManualReader) option.ClientOption {
 	return &withTestMetricReaderConfig{metricReader: ex}
 }
@@ -243,7 +277,15 @@ func (wrstc *withReadStallTimeoutConfig) ApplyStorageOpt(config *storageConfig) 
 	config.readStallTimeoutConfig = wrstc.readStallTimeoutConfig
 }
 
-func withGRPCBidiReads() option.ClientOption {
+// WithGRPCBidiReads provides an [option.ClientOption] that may be passed to
+// [NewGRPCClient].
+//
+// It instructs the client to use the bi-directional gRPC API for all standard object
+// downloads. Additionally, this option is strictly required to use the
+// [MultiRangeDownloader] surface.
+//
+// Note: This option is exclusively supported for gRPC clients.
+func WithGRPCBidiReads() option.ClientOption {
 	return &withGRPCBidiReadsConfig{}
 }
 
@@ -253,4 +295,46 @@ type withGRPCBidiReadsConfig struct {
 
 func (w *withGRPCBidiReadsConfig) ApplyStorageOpt(config *storageConfig) {
 	config.grpcBidiReads = true
+}
+
+// WithAppendableUploads provides an [option.ClientOption] that may be passed to
+// [NewGRPCClient].
+//
+// It enables the client to use appendable object semantics for uploads by default.
+//
+// Note: This option is exclusively supported for gRPC clients.
+func WithAppendableUploads() option.ClientOption {
+	return &withGRPCAppendableUploadsConfig{}
+}
+
+type withGRPCAppendableUploadsConfig struct {
+	internaloption.EmbeddableAdapter
+}
+
+func (w *withGRPCAppendableUploadsConfig) ApplyStorageOpt(config *storageConfig) {
+	config.grpcAppendableUploads = true
+}
+
+func withOtelMetrics() option.ClientOption {
+	return &withOtelMetricsConfig{}
+}
+
+type withOtelMetricsConfig struct {
+	internaloption.EmbeddableAdapter
+}
+
+func (w *withOtelMetricsConfig) ApplyStorageOpt(c *storageConfig) {
+	c.enableOtelMetrics = true
+}
+
+func withOtelDebugMetrics() option.ClientOption {
+	return &withOtelDebugMetricsConfig{}
+}
+
+type withOtelDebugMetricsConfig struct {
+	internaloption.EmbeddableAdapter
+}
+
+func (w *withOtelDebugMetricsConfig) ApplyStorageOpt(c *storageConfig) {
+	c.enableOtelDebugMetrics = true
 }
