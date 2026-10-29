@@ -50,6 +50,18 @@
       ],
       "groupName": "go version",
       "groupSlug": "go-version"
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "rangeStrategy": "bump"
     }
   ]
 }
