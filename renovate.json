@@ -39,15 +39,29 @@
       ]
     },
     {
-      "matchPackageNames": [
-        "go",
-        "golang"
+      "matchManagers": [
+        "gomod",
+        "dockerfile"
       ],
-      "schedule": [
-        "* 2 * * 0"
+      "matchDepNames": [
+        "go",
+        "golang",
+        "toolchain"
       ],
       "groupName": "go version",
       "groupSlug": "go-version"
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "rangeStrategy": "bump"
     }
   ]
 }
