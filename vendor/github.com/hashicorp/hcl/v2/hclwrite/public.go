@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2014, 2025
 // SPDX-License-Identifier: MPL-2.0
 
 package hclwrite
@@ -19,7 +19,7 @@ func NewFile() *File {
 	file := &File{
 		inTree: newInTree(),
 	}
-	file.body = file.inTree.children.Append(body)
+	file.body = file.children.Append(body)
 	return file
 }
 
@@ -42,6 +42,7 @@ func Format(src []byte) []byte {
 	tokens := lexConfig(src)
 	format(tokens)
 	buf := &bytes.Buffer{}
+	//nolint:errcheck // FIXME: Propogate errors upward.
 	tokens.WriteTo(buf)
 	return buf.Bytes()
 }
