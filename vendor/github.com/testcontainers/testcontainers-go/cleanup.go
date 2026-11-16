@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+
+	"github.com/moby/moby/client"
 )
 
 // TerminateOptions is a type that holds the options for terminating a container.
@@ -48,15 +50,15 @@ func (o *TerminateOptions) Cleanup() error {
 	if len(o.volumes) == 0 {
 		return nil
 	}
-	client, err := NewDockerClientWithOpts(o.ctx)
+	apiClient, err := NewDockerClientWithOpts(o.ctx)
 	if err != nil {
 		return fmt.Errorf("docker client: %w", err)
 	}
-	defer client.Close()
+	defer apiClient.Close()
 	// Best effort to remove all volumes.
 	var errs []error
 	for _, volume := range o.volumes {
-		if errRemove := client.VolumeRemove(o.ctx, volume, true); errRemove != nil {
+		if _, errRemove := apiClient.VolumeRemove(o.ctx, volume, client.VolumeRemoveOptions{Force: true}); errRemove != nil {
 			errs = append(errs, fmt.Errorf("volume remove %q: %w", volume, errRemove))
 		}
 	}
@@ -115,7 +117,7 @@ func isNil(val any) bool {
 
 	valueOf := reflect.ValueOf(val)
 	switch valueOf.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
 		return valueOf.IsNil()
 	default:
 		return false

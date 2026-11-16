@@ -4,7 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 
-	"github.com/docker/docker/api/types/mount"
+	"github.com/moby/moby/api/types/mount"
 
 	"github.com/testcontainers/testcontainers-go/log"
 )
@@ -173,7 +173,7 @@ func mapToDockerMounts(containerMounts ContainerMounts) []mount.Mount {
 		case ImageMounter:
 			containerMount.ImageOptions = typedMounter.ImageOptions()
 		case BindMounter:
-			log.Printf("Mount type %s is not supported by Testcontainers for Go", m.Source.Type())
+			log.Printf("Mount type %s is not supported by Testcontainers for Go", mountTypeMapping[m.Source.Type()])
 		default:
 			// The provided source type has no custom options
 		}
