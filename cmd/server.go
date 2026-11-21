@@ -208,7 +208,7 @@ func init() {
 	serverCmd.Flags().StringSliceVar(&flagLoginScopes, "login-scopes", nil, "List of scopes")
 
 	// OIDC auth options
-	serverCmd.Flags().StringSliceVar(&flagAuthOidc, "auth-oidc", []string{}, "Enable multiple OIDC authentication methods. Format: client_id=...;issuer=...;scopes=...;login_grants=...;login_ports=...;accept_non_jwt_tokens=true/false")
+	serverCmd.Flags().StringSliceVar(&flagAuthOidc, "auth-oidc", []string{}, "Enable multiple OIDC authentication methods. The first one must be reachable at startup, the others are discovered on first use. Format: client_id=...;issuer=...;scopes=...;login_grants=...;login_ports=...;accept_non_jwt_tokens=true/false")
 	serverCmd.Flags().StringVar(&flagAuthOidcIssuer, "auth-oidc-issuer", "", "OIDC issuer URL")
 	serverCmd.Flags().StringVar(&flagAuthOidcClientId, "auth-oidc-clientid", "", "OIDC client identifier")
 	serverCmd.Flags().StringSliceVar(&flagAuthOidcScopes, "auth-oidc-scopes", nil, "List of OAuth2 scopes")
@@ -437,12 +437,9 @@ func parseOidc(ctx context.Context) ([]auth.OidcConfig, error) {
 }
 
 func setupOidc(ctx context.Context) ([]auth.Provider, []*discovery.LoginV1, error) {
-	authCtx, cancelAuthCtx := context.WithTimeout(ctx, 15*time.Second)
-	defer cancelAuthCtx()
-
-	oidcConfigs, error := parseOidc(ctx)
-	if error != nil {
-		return nil, nil, fmt.Errorf("failed to parse OIDC configuration: %w", error)
+	oidcConfigs, err := parseOidc(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse OIDC configuration: %w", err)
 	}
 
 	providers := []auth.Provider{}
@@ -453,14 +450,18 @@ func setupOidc(ctx context.Context) ([]auth.Provider, []*discovery.LoginV1, erro
 
 	for i, config := range oidcConfigs {
 		slog.Debug("setting up oidc auth", slog.Any("config", config))
-		provider, err := auth.NewOidcProvider(authCtx, config.Issuer, config.ClientID, config.AcceptNonJWTTokens)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to set up oidc provider: %w", err)
+		var provider *auth.OidcProvider
+		if i == 0 {
+			provider, err = auth.NewOidcProvider(ctx, config.Issuer, config.ClientID, config.AcceptNonJWTTokens)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to set up oidc provider: %w", err)
+			}
+		} else {
+			provider = auth.NewLazyOidcProvider(config.Issuer, config.ClientID, config.AcceptNonJWTTokens)
 		}
 
-		// Only create login configuration for the first provider if global login flags are provided
-		// or if this is the first provider and no global flags are provided
-		if (hasGlobalLoginFlags && i == 0) || (!hasGlobalLoginFlags && i == 0) {
+		// The discovery document only advertises login for the first provider
+		if i == 0 {
 			var login *discovery.LoginV1
 			if hasGlobalLoginFlags {
 				// Use global login flags

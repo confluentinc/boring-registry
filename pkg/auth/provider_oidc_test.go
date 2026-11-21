@@ -2,6 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,10 +13,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/boring-registry/boring-registry/pkg/core"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOidcProviderDiscovery(t *testing.T) {
@@ -365,4 +373,61 @@ func TestOidcConfig(t *testing.T) {
 	assert.Equal(t, []string{"authorization_code"}, config.LoginGrants)
 	assert.Equal(t, []int{10000, 10010}, config.LoginPorts)
 	assert.True(t, config.AcceptNonJWTTokens)
+}
+
+func TestLazyOidcProviderRecoversAfterIssuerComesUp(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	jwk := jose.JSONWebKey{Key: key.Public(), KeyID: "k1", Algorithm: "ES256", Use: "sig"}
+
+	var up atomic.Bool
+	var discoveries atomic.Int32
+	var issuer string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		discoveries.Add(1)
+		if !up.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer,
+			"jwks_uri":                              issuer + "/keys",
+			"id_token_signing_alg_values_supported": []string{"ES256"},
+		})
+	})
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}})
+	})
+	s := httptest.NewServer(mux)
+	defer s.Close()
+	issuer = s.URL
+
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: "k1"}}, nil)
+	require.NoError(t, err)
+	payload, err := json.Marshal(map[string]any{
+		"iss": issuer,
+		"sub": "argo",
+		"aud": "registry",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	require.NoError(t, err)
+	jws, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := jws.CompactSerialize()
+	require.NoError(t, err)
+
+	provider := NewLazyOidcProvider(issuer, "registry", false)
+	provider.retryInterval = 50 * time.Millisecond
+
+	err = provider.Verify(context.Background(), token)
+	assert.ErrorIs(t, err, core.ErrInvalidToken)
+
+	err = provider.Verify(context.Background(), token)
+	assert.ErrorIs(t, err, core.ErrInvalidToken)
+	assert.EqualValues(t, 1, discoveries.Load(), "retries are throttled")
+
+	up.Store(true)
+	time.Sleep(100 * time.Millisecond)
+	assert.NoError(t, provider.Verify(context.Background(), token))
 }
