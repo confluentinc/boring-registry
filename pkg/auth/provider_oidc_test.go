@@ -439,3 +439,72 @@ func TestOidcProviderRecoversAfterIssuerComesUp(t *testing.T) {
 		return provider.Verify(t.Context(), token) == nil
 	}, 5*time.Second, 10*time.Millisecond)
 }
+
+func TestOidcProviderKeyFetchOutageAfterDiscovery(t *testing.T) {
+	oldVerify, oldHTTP := oidcVerifyTimeout, oidcHTTPTimeout
+	oidcVerifyTimeout, oidcHTTPTimeout = 200*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { oidcVerifyTimeout, oidcHTTPTimeout = oldVerify, oldHTTP })
+
+	known, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	rotated, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	var keysHang, rotatedPublished atomic.Bool
+	var issuer string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer,
+			"jwks_uri":                              issuer + "/keys",
+			"id_token_signing_alg_values_supported": []string{"ES256"},
+		})
+	})
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		if keysHang.Load() {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		keys := []jose.JSONWebKey{{Key: known.Public(), KeyID: "known", Algorithm: "ES256", Use: "sig"}}
+		if rotatedPublished.Load() {
+			keys = append(keys, jose.JSONWebKey{Key: rotated.Public(), KeyID: "rotated", Algorithm: "ES256", Use: "sig"})
+		}
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: keys})
+	})
+	s := httptest.NewServer(mux)
+	defer s.Close()
+	issuer = s.URL
+
+	sign := func(key *ecdsa.PrivateKey, kid string) string {
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: kid}}, nil)
+		require.NoError(t, err)
+		payload, err := json.Marshal(map[string]any{"iss": issuer, "sub": "argo", "aud": "registry", "exp": time.Now().Add(time.Hour).Unix()})
+		require.NoError(t, err)
+		jws, err := signer.Sign(payload)
+		require.NoError(t, err)
+		token, err := jws.CompactSerialize()
+		require.NoError(t, err)
+		return token
+	}
+
+	provider := newReadyProvider(t, issuer, "registry", false)
+	knownToken, rotatedToken := sign(known, "known"), sign(rotated, "rotated")
+	assert.NoError(t, provider.Verify(t.Context(), knownToken))
+	time.Sleep(100 * time.Millisecond)
+
+	keysHang.Store(true)
+	assert.NoError(t, provider.Verify(t.Context(), knownToken), "cached keys keep working during an outage")
+
+	start := time.Now()
+	assert.ErrorIs(t, provider.Verify(t.Context(), rotatedToken), core.ErrInvalidToken)
+	assert.Less(t, time.Since(start), 2*time.Second, "a hung key endpoint must not hang the request")
+
+	keysHang.Store(false)
+	rotatedPublished.Store(true)
+	require.Eventually(t, func() bool {
+		return provider.Verify(t.Context(), rotatedToken) == nil
+	}, 5*time.Second, 50*time.Millisecond, "key refresh recovers after the outage")
+}

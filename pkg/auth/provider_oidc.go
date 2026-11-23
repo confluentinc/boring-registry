@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,8 @@ type OidcProvider struct {
 
 var (
 	oidcDiscoveryTimeout = 15 * time.Second
+	oidcVerifyTimeout    = 10 * time.Second
+	oidcHTTPTimeout      = 10 * time.Second
 	oidcMinBackoff       = time.Second
 	oidcMaxBackoff       = 30 * time.Second
 )
@@ -74,9 +77,11 @@ func (o *OidcProvider) Verify(ctx context.Context, token string) error {
 	if provider == nil {
 		return fmt.Errorf("%w: discovery for issuer %s has not completed", core.ErrInvalidToken, o.issuer)
 	}
-	verifier := provider.VerifierContext(ctx, oidcConfig)
+	verifier := provider.Verifier(oidcConfig)
 
-	idToken, err := verifier.Verify(ctx, token)
+	verifyCtx, cancel := context.WithTimeout(ctx, oidcVerifyTimeout)
+	defer cancel()
+	idToken, err := verifier.Verify(verifyCtx, token)
 	if err != nil {
 		return fmt.Errorf("%w: %w", core.ErrInvalidToken, err)
 	}
@@ -149,7 +154,9 @@ func (o *OidcProvider) discoverUntilReady(ctx context.Context) {
 	backoff := oidcMinBackoff
 	for {
 		start := time.Now()
-		discoveryCtx, cancel := context.WithTimeout(ctx, oidcDiscoveryTimeout)
+		// The client also bounds later key refreshes, which go-oidc runs without a deadline
+		httpCtx := oidc.ClientContext(ctx, &http.Client{Timeout: oidcHTTPTimeout})
+		discoveryCtx, cancel := context.WithTimeout(httpCtx, oidcDiscoveryTimeout)
 		provider, err := oidc.NewProvider(discoveryCtx, o.issuer)
 		cancel()
 		if err == nil {
