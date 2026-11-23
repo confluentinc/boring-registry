@@ -1,5 +1,5 @@
 ---
-globs: "*.go"
+paths: "*.go"
 ---
 
 # Go Conventions

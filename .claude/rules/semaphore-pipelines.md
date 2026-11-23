@@ -1,5 +1,5 @@
 ---
-globs: ".semaphore/*.yml,.semaphore/*.yaml"
+paths: ".semaphore/*.yml,.semaphore/*.yaml"
 ---
 
 # Semaphore Pipeline Conventions
