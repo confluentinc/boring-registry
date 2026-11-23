@@ -1,5 +1,5 @@
 ---
-globs: "helm/**"
+paths: "helm/**"
 ---
 
 # Helm Chart Conventions

@@ -1,5 +1,5 @@
 ---
-globs: "*.sh"
+paths: "*.sh"
 ---
 
 # Shell Script Conventions
