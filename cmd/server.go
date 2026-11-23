@@ -208,7 +208,7 @@ func init() {
 	serverCmd.Flags().StringSliceVar(&flagLoginScopes, "login-scopes", nil, "List of scopes")
 
 	// OIDC auth options
-	serverCmd.Flags().StringSliceVar(&flagAuthOidc, "auth-oidc", []string{}, "Enable multiple OIDC authentication methods. Issuers are discovered in the background and never block startup. Format: client_id=...;issuer=...;scopes=...;login_grants=...;login_ports=...;accept_non_jwt_tokens=true/false")
+	serverCmd.Flags().StringSliceVar(&flagAuthOidc, "auth-oidc", []string{}, "Enable multiple OIDC authentication methods. Format: client_id=...;issuer=...;scopes=...;login_grants=...;login_ports=...;accept_non_jwt_tokens=true/false")
 	serverCmd.Flags().StringVar(&flagAuthOidcIssuer, "auth-oidc-issuer", "", "OIDC issuer URL")
 	serverCmd.Flags().StringVar(&flagAuthOidcClientId, "auth-oidc-clientid", "", "OIDC client identifier")
 	serverCmd.Flags().StringSliceVar(&flagAuthOidcScopes, "auth-oidc-scopes", nil, "List of OAuth2 scopes")
