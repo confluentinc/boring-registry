@@ -47,10 +47,11 @@ func TestOidcProviderDiscovery(t *testing.T) {
 	defer s.Close()
 	issuer = s.URL
 
-	provider, err := NewOidcProvider(context.Background(), issuer, "boring-registry", false)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, provider.AuthURL())
-	assert.NotEmpty(t, provider.TokenURL())
+	provider := newReadyProvider(t, issuer, "boring-registry", false)
+	authURL, tokenURL, ok := provider.Endpoints()
+	assert.True(t, ok)
+	assert.NotEmpty(t, authURL)
+	assert.NotEmpty(t, tokenURL)
 }
 
 func TestOidcProviderGetIssuer(t *testing.T) {
@@ -218,10 +219,9 @@ func TestOidcProviderVerify(t *testing.T) {
 		defer s.Close()
 		issuer = s.URL
 
-		provider, err := NewOidcProvider(context.Background(), issuer, "boring-registry", false)
-		assert.NoError(t, err)
+		provider := newReadyProvider(t, issuer, "boring-registry", false)
 
-		err = provider.Verify(context.Background(), "invalid.jwt.token")
+		err := provider.Verify(context.Background(), "invalid.jwt.token")
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, core.ErrInvalidToken),
 			"OIDC verification failure should wrap core.ErrInvalidToken for 401 status code mapping")
@@ -268,32 +268,34 @@ func TestNewOidcProvider(t *testing.T) {
 		defer s.Close()
 		issuer = s.URL
 
-		provider, err := NewOidcProvider(context.Background(), issuer, "test-client-id", false)
-		assert.NoError(t, err)
+		provider := newReadyProvider(t, issuer, "test-client-id", false)
 		assert.NotNil(t, provider)
 		assert.Equal(t, issuer, provider.GetIssuer())
 		assert.Equal(t, "test-client-id", provider.clientIdentifier)
 		assert.NotNil(t, provider.logger)
-		assert.NotNil(t, provider.provider)
+		assert.NotNil(t, provider.provider.Load())
 		assert.False(t, provider.acceptNonJWTTokens)
 	})
 
-	t.Run("failed provider creation invalid issuer", func(t *testing.T) {
-		provider, err := NewOidcProvider(context.Background(), "http://invalid-url-12345", "test-client-id", false)
-		assert.Error(t, err)
-		assert.Nil(t, provider)
+	t.Run("unreachable issuer does not fail creation", func(t *testing.T) {
+		provider := NewOidcProvider(t.Context(), "http://invalid-url-12345", "test-client-id", false)
+		assert.NotNil(t, provider)
+		_, _, ok := provider.Endpoints()
+		assert.False(t, ok)
+		assert.ErrorIs(t, provider.Verify(t.Context(), "a.b.c"), core.ErrInvalidToken)
 	})
 
-	t.Run("failed provider creation server error", func(t *testing.T) {
+	t.Run("erroring issuer does not fail creation", func(t *testing.T) {
 		hf := func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 		s := httptest.NewServer(http.HandlerFunc(hf))
 		defer s.Close()
 
-		provider, err := NewOidcProvider(context.Background(), s.URL, "test-client-id", false)
-		assert.Error(t, err)
-		assert.Nil(t, provider)
+		provider := NewOidcProvider(t.Context(), s.URL, "test-client-id", false)
+		assert.NotNil(t, provider)
+		_, _, ok := provider.Endpoints()
+		assert.False(t, ok)
 	})
 
 	t.Run("provider with non-JWT token support", func(t *testing.T) {
@@ -318,8 +320,7 @@ func TestNewOidcProvider(t *testing.T) {
 		defer s.Close()
 		issuer = s.URL
 
-		provider, err := NewOidcProvider(context.Background(), issuer, "test-client-id", true)
-		assert.NoError(t, err)
+		provider := newReadyProvider(t, issuer, "test-client-id", true)
 		assert.NotNil(t, provider)
 		assert.True(t, provider.acceptNonJWTTokens)
 	})
@@ -347,12 +348,10 @@ func TestOidcProviderURLs(t *testing.T) {
 	defer s.Close()
 	issuer = s.URL
 
-	provider, err := NewOidcProvider(context.Background(), issuer, "test-client", false)
-	assert.NoError(t, err)
+	provider := newReadyProvider(t, issuer, "test-client", false)
 
-	authURL := provider.AuthURL()
-	tokenURL := provider.TokenURL()
-
+	authURL, tokenURL, ok := provider.Endpoints()
+	assert.True(t, ok)
 	assert.Equal(t, fmt.Sprintf("%s/auth", issuer), authURL)
 	assert.Equal(t, fmt.Sprintf("%s/token", issuer), tokenURL)
 }
@@ -375,17 +374,29 @@ func TestOidcConfig(t *testing.T) {
 	assert.True(t, config.AcceptNonJWTTokens)
 }
 
-func TestLazyOidcProviderRecoversAfterIssuerComesUp(t *testing.T) {
+func newReadyProvider(t *testing.T, issuer, clientID string, acceptNonJWT bool) *OidcProvider {
+	t.Helper()
+	provider := NewOidcProvider(t.Context(), issuer, clientID, acceptNonJWT)
+	require.Eventually(t, func() bool {
+		_, _, ok := provider.Endpoints()
+		return ok
+	}, 5*time.Second, 10*time.Millisecond)
+	return provider
+}
+
+func TestOidcProviderRecoversAfterIssuerComesUp(t *testing.T) {
+	oldMin, oldMax := oidcMinBackoff, oidcMaxBackoff
+	oidcMinBackoff, oidcMaxBackoff = 10*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { oidcMinBackoff, oidcMaxBackoff = oldMin, oldMax })
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	jwk := jose.JSONWebKey{Key: key.Public(), KeyID: "k1", Algorithm: "ES256", Use: "sig"}
 
 	var up atomic.Bool
-	var discoveries atomic.Int32
 	var issuer string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		discoveries.Add(1)
 		if !up.Load() {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
@@ -417,17 +428,14 @@ func TestLazyOidcProviderRecoversAfterIssuerComesUp(t *testing.T) {
 	token, err := jws.CompactSerialize()
 	require.NoError(t, err)
 
-	provider := NewLazyOidcProvider(issuer, "registry", false)
-	provider.retryInterval = 50 * time.Millisecond
+	provider := NewOidcProvider(t.Context(), issuer, "registry", false)
+	assert.ErrorIs(t, provider.Verify(t.Context(), token), core.ErrInvalidToken)
 
-	err = provider.Verify(context.Background(), token)
-	assert.ErrorIs(t, err, core.ErrInvalidToken)
-
-	err = provider.Verify(context.Background(), token)
-	assert.ErrorIs(t, err, core.ErrInvalidToken)
-	assert.EqualValues(t, 1, discoveries.Load(), "retries are throttled")
+	time.Sleep(100 * time.Millisecond)
+	assert.ErrorIs(t, provider.Verify(t.Context(), token), core.ErrInvalidToken)
 
 	up.Store(true)
-	time.Sleep(100 * time.Millisecond)
-	assert.NoError(t, provider.Verify(context.Background(), token))
+	require.Eventually(t, func() bool {
+		return provider.Verify(t.Context(), token) == nil
+	}, 5*time.Second, 10*time.Millisecond)
 }

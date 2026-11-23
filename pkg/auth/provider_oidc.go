@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/boring-registry/boring-registry/pkg/audit"
@@ -18,18 +18,13 @@ type OidcProvider struct {
 	issuer             string
 	clientIdentifier   string
 	acceptNonJWTTokens bool
-
-	retryInterval time.Duration
-
-	mu          sync.Mutex
-	provider    *oidc.Provider
-	lastInitErr error
-	lastInitAt  time.Time
+	provider           atomic.Pointer[oidc.Provider]
 }
 
-const (
-	oidcDiscoveryTimeout     = 15 * time.Second
-	defaultOidcRetryInterval = 10 * time.Second
+var (
+	oidcDiscoveryTimeout = 15 * time.Second
+	oidcMinBackoff       = time.Second
+	oidcMaxBackoff       = 30 * time.Second
 )
 
 type OidcConfig struct {
@@ -75,9 +70,9 @@ func (o *OidcProvider) Verify(ctx context.Context, token string) error {
 	oidcConfig := &oidc.Config{
 		ClientID: o.clientIdentifier,
 	}
-	provider, err := o.discover(ctx)
-	if err != nil {
-		return fmt.Errorf("%w: %w", core.ErrInvalidToken, err)
+	provider := o.provider.Load()
+	if provider == nil {
+		return fmt.Errorf("%w: discovery for issuer %s has not completed", core.ErrInvalidToken, o.issuer)
 	}
 	verifier := provider.VerifierContext(ctx, oidcConfig)
 
@@ -128,58 +123,49 @@ func (o *OidcProvider) extractUserContext(idToken *oidc.IDToken) (*audit.UserCon
 	), nil
 }
 
-func (o *OidcProvider) AuthURL() string {
-	return o.provider.Endpoint().AuthURL
+// Endpoints returns the authorization and token URLs once discovery has succeeded.
+func (o *OidcProvider) Endpoints() (authURL, tokenURL string, ok bool) {
+	provider := o.provider.Load()
+	if provider == nil {
+		return "", "", false
+	}
+	endpoint := provider.Endpoint()
+	return endpoint.AuthURL, endpoint.TokenURL, true
 }
 
-func (o *OidcProvider) TokenURL() string {
-	return o.provider.Endpoint().TokenURL
-}
-
-// discover returns the provider, running discovery if it has not succeeded yet.
-func (o *OidcProvider) discover(ctx context.Context) (*oidc.Provider, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if o.provider != nil {
-		return o.provider, nil
-	}
-	if o.lastInitErr != nil && time.Since(o.lastInitAt) < o.retryInterval {
-		return nil, o.lastInitErr
-	}
-
-	start := time.Now()
-	discoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oidcDiscoveryTimeout)
-	defer cancel()
-	provider, err := oidc.NewProvider(discoveryCtx, o.issuer)
-	if err != nil {
-		o.lastInitErr = fmt.Errorf("oidc discovery for issuer %s failed: %w", o.issuer, err)
-		o.lastInitAt = time.Now()
-		return nil, o.lastInitErr
-	}
-
-	o.logger.Info("finished initializing OIDC provider",
-		slog.String("issuer", o.issuer), slog.String("took", time.Since(start).String()))
-	o.provider, o.lastInitErr = provider, nil
-	return provider, nil
-}
-
-// NewOidcProvider runs discovery immediately and fails if the issuer is unreachable.
-func NewOidcProvider(ctx context.Context, issuer, clientIdentifier string, acceptNonJWTTokens bool) (*OidcProvider, error) {
-	p := NewLazyOidcProvider(issuer, clientIdentifier, acceptNonJWTTokens)
-	if _, err := p.discover(ctx); err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-// NewLazyOidcProvider defers discovery to the first Verify call and retries after failures.
-func NewLazyOidcProvider(issuer, clientIdentifier string, acceptNonJWTTokens bool) *OidcProvider {
-	return &OidcProvider{
+// NewOidcProvider never blocks or fails; discovery retries in the background until ctx ends.
+func NewOidcProvider(ctx context.Context, issuer, clientIdentifier string, acceptNonJWTTokens bool) *OidcProvider {
+	o := &OidcProvider{
 		logger:             slog.Default(),
 		issuer:             issuer,
 		clientIdentifier:   clientIdentifier,
 		acceptNonJWTTokens: acceptNonJWTTokens,
-		retryInterval:      defaultOidcRetryInterval,
+	}
+	go o.discoverUntilReady(ctx)
+	return o
+}
+
+func (o *OidcProvider) discoverUntilReady(ctx context.Context) {
+	backoff := oidcMinBackoff
+	for {
+		start := time.Now()
+		discoveryCtx, cancel := context.WithTimeout(ctx, oidcDiscoveryTimeout)
+		provider, err := oidc.NewProvider(discoveryCtx, o.issuer)
+		cancel()
+		if err == nil {
+			o.provider.Store(provider)
+			o.logger.Info("finished initializing OIDC provider",
+				slog.String("issuer", o.issuer), slog.String("took", time.Since(start).String()))
+			return
+		}
+
+		o.logger.Warn("OIDC discovery failed, retrying",
+			slog.String("issuer", o.issuer), slog.String("err", err.Error()), slog.String("retry_in", backoff.String()))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, oidcMaxBackoff)
 	}
 }
