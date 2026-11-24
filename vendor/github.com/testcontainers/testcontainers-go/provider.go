@@ -16,6 +16,7 @@ import (
 const (
 	ProviderDefault ProviderType = iota // default will auto-detect provider from DOCKER_HOST environment variable
 	ProviderDocker
+	// Deprecated: import modules/podman and select provider=podman instead.
 	ProviderPodman
 )
 
@@ -94,6 +95,32 @@ type ContainerProvider interface {
 	Config() TestcontainersConfig
 }
 
+// UnderlyingProviderType resolves the provider using the explicit selection,
+// configuration, and DOCKER_HOST, in that order. It does not contact a daemon.
+func (t ProviderType) UnderlyingProviderType() ProviderType {
+	// Provider set within code has precedence over all others
+	if t != ProviderDefault {
+		return t
+	}
+
+	// Configuration of an explicit provider has the next priority
+	conf := config.Read()
+	switch strings.ToLower(strings.TrimSpace(conf.Provider)) {
+	case "docker":
+		return ProviderDocker
+	case "podman":
+		return ProviderPodman
+	}
+
+	// Preserve auto-detection from DOCKER_HOST without initializing host discovery.
+	if strings.Contains(os.Getenv("DOCKER_HOST"), "podman.sock") {
+		return ProviderPodman
+	}
+
+	// When all else fails, default to Docker
+	return ProviderDocker
+}
+
 // GetProvider provides the provider implementation for a certain type
 func (t ProviderType) GetProvider(opts ...GenericProviderOption) (GenericProvider, error) {
 	opt := &GenericProviderOptions{
@@ -103,14 +130,25 @@ func (t ProviderType) GetProvider(opts ...GenericProviderOption) (GenericProvide
 	for _, o := range opts {
 		o.ApplyGenericTo(opt)
 	}
-
-	pt := t
-	if pt == ProviderDefault && strings.Contains(os.Getenv("DOCKER_HOST"), "podman.sock") {
-		pt = ProviderPodman
+	if t != ProviderDefault {
+		var name string
+		switch t {
+		case ProviderDocker:
+			name = "docker"
+		case ProviderPodman:
+			name = "podman"
+		default:
+			return nil, errors.New("unknown provider")
+		}
+		if err := core.SelectRuntime(name); err != nil {
+			return nil, err
+		}
+	} else if name := core.ConfiguredProviderName(); core.HasRegisteredProvider(name) || (name != "docker" && name != "podman") {
+		return NewDockerProvider(Generic2DockerOptions(opts...)...)
 	}
 
-	switch pt {
-	case ProviderDefault, ProviderDocker:
+	switch t.UnderlyingProviderType() {
+	case ProviderDocker:
 		providerOptions := append(Generic2DockerOptions(opts...), WithDefaultBridgeNetwork(Bridge))
 		provider, err := NewDockerProvider(providerOptions...)
 		if err != nil {
@@ -141,15 +179,26 @@ func NewDockerProvider(provOpts ...DockerProviderOption) (*DockerProvider, error
 	}
 
 	ctx := context.Background()
+	host, err := core.ExtractDockerHost(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := core.Runtime(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if o.defaultBridgeNetworkName == "" {
+		o.defaultBridgeNetworkName = runtime.DefaultBridgeNetwork
+	}
 	c, err := NewDockerClientWithOpts(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	return &DockerProvider{
 		DockerProviderOptions: o,
-		host:                  core.MustExtractDockerHost(ctx),
 		client:                c,
+		host:                  host,
 		config:                config.Read(),
+		runtime:               runtime,
 	}, nil
 }
