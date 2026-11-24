@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2014, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package hclwrite
@@ -43,7 +43,7 @@ func (b *Body) Clear() {
 }
 
 func (b *Body) AppendUnstructuredTokens(ts Tokens) {
-	b.inTree.children.Append(ts)
+	b.children.Append(ts)
 }
 
 // Attributes returns a new map of all of the attributes in the body, with
@@ -103,6 +103,21 @@ func (b *Body) getAttributeNode(name string) *node {
 	return nil
 }
 
+// RenameAttribute changes the attribute named fromName to toName.
+// Takes no action if fromName is missing or there is already a
+// conflicting attribute called toName.
+//
+// Returns true if the rename succeeded.
+func (b *Body) RenameAttribute(fromName, toName string) bool {
+	attr := b.GetAttribute(fromName)
+	conflictingAttr := b.GetAttribute(toName)
+	if attr == nil || conflictingAttr != nil {
+		return false
+	}
+	attr.setName(toName)
+	return true
+}
+
 // FirstMatchingBlock returns a first matching block from the body that has the
 // given name and labels or returns nil if there is currently no matching
 // block.
@@ -144,13 +159,16 @@ func (b *Body) RemoveBlock(block *Block) bool {
 // The same caveats apply to this function as for NewExpressionRaw on which
 // it is based. If possible, prefer to use SetAttributeValue or
 // SetAttributeTraversal.
+//
+// The return value is the attribute that was either modified in-place or
+// created.
 func (b *Body) SetAttributeRaw(name string, tokens Tokens) *Attribute {
 	attr := b.GetAttribute(name)
 	expr := NewExpressionRaw(tokens)
 	if attr != nil {
 		attr.expr = attr.expr.ReplaceWith(expr)
 	} else {
-		attr := newAttribute()
+		attr = newAttribute()
 		attr.init(name, expr)
 		b.appendItem(attr)
 	}
@@ -171,7 +189,7 @@ func (b *Body) SetAttributeValue(name string, val cty.Value) *Attribute {
 	if attr != nil {
 		attr.expr = attr.expr.ReplaceWith(expr)
 	} else {
-		attr := newAttribute()
+		attr = newAttribute()
 		attr.init(name, expr)
 		b.appendItem(attr)
 	}
@@ -192,7 +210,7 @@ func (b *Body) SetAttributeTraversal(name string, traversal hcl.Traversal) *Attr
 	if attr != nil {
 		attr.expr = attr.expr.ReplaceWith(expr)
 	} else {
-		attr := newAttribute()
+		attr = newAttribute()
 		attr.init(name, expr)
 		b.appendItem(attr)
 	}
