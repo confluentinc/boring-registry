@@ -228,7 +228,7 @@ func init() {
 func serveMux(ctx context.Context) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 
-	authMiddleware, logins, err := authMiddleware(ctx)
+	authMiddleware, login, err := authMiddleware(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +243,7 @@ func serveMux(ctx context.Context) (*http.ServeMux, error) {
 	instrumentation := o11y.NewMiddleware(metrics.Http)
 
 	registerMetrics(mux)
-	registerDiscovery(mux, logins)
+	registerDiscovery(mux, login)
 
 	s, err := setupStorage(ctx)
 	if err != nil {
@@ -436,80 +436,81 @@ func parseOidc(ctx context.Context) ([]auth.OidcConfig, error) {
 	return parsedList, nil
 }
 
-func setupOidc(ctx context.Context) ([]auth.Provider, []*discovery.LoginV1, error) {
-	authCtx, cancelAuthCtx := context.WithTimeout(ctx, 15*time.Second)
-	defer cancelAuthCtx()
-
-	oidcConfigs, error := parseOidc(ctx)
-	if error != nil {
-		return nil, nil, fmt.Errorf("failed to parse OIDC configuration: %w", error)
+func setupOidc(ctx context.Context) ([]auth.Provider, loginSource, error) {
+	oidcConfigs, err := parseOidc(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse OIDC configuration: %w", err)
 	}
 
 	providers := []auth.Provider{}
-	logins := []*discovery.LoginV1{}
+	var login loginSource
 
 	// Check if global login flags are provided
 	hasGlobalLoginFlags := flagAuthOktaAuthz != "" && flagAuthOktaToken != "" && flagAuthOktaClientId != ""
 
 	for i, config := range oidcConfigs {
 		slog.Debug("setting up oidc auth", slog.Any("config", config))
-		provider, err := auth.NewOidcProvider(authCtx, config.Issuer, config.ClientID, config.AcceptNonJWTTokens)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to set up oidc provider: %w", err)
-		}
+		provider := auth.NewOidcProvider(ctx, config.Issuer, config.ClientID, config.AcceptNonJWTTokens)
 
-		// Only create login configuration for the first provider if global login flags are provided
-		// or if this is the first provider and no global flags are provided
-		if (hasGlobalLoginFlags && i == 0) || (!hasGlobalLoginFlags && i == 0) {
-			var login *discovery.LoginV1
+		// The discovery document only advertises login for the first provider
+		if i == 0 {
 			if hasGlobalLoginFlags {
-				// Use global login flags
-				login = &discovery.LoginV1{
+				login = staticLogin(&discovery.LoginV1{
 					Client:     flagAuthOktaClientId,
 					GrantTypes: flagLoginGrantTypes,
 					Authz:      flagAuthOktaAuthz,
 					Token:      flagAuthOktaToken,
 					Ports:      flagLoginPorts,
 					Scopes:     flagLoginScopes,
-				}
+				})
 			} else {
-				// Use provider-specific login configuration
-				login = &discovery.LoginV1{
-					Client:     config.ClientID,
-					GrantTypes: config.LoginGrants,
-					Authz:      provider.AuthURL(),
-					Token:      provider.TokenURL(),
-					Ports:      config.LoginPorts,
-					Scopes:     config.Scopes,
+				login = func() *discovery.LoginV1 {
+					authURL, tokenURL, ok := provider.Endpoints()
+					if !ok {
+						return nil
+					}
+					return &discovery.LoginV1{
+						Client:     config.ClientID,
+						GrantTypes: config.LoginGrants,
+						Authz:      authURL,
+						Token:      tokenURL,
+						Ports:      config.LoginPorts,
+						Scopes:     config.Scopes,
+					}
 				}
 			}
-			logins = append(logins, login)
 		}
 
 		providers = append(providers, provider)
 	}
 
-	return providers, logins, nil
+	return providers, login, nil
 }
 
-func setupOkta() ([]auth.Provider, []*discovery.LoginV1) {
+func setupOkta() ([]auth.Provider, loginSource) {
 	slog.Debug("setting up okta auth", slog.String("issuer", flagAuthOktaIssuer), slog.String("client-id", flagAuthOktaClientId))
 	slog.Warn("Okta auth is deprecated, please migrate to OIDC auth")
 	p := []auth.Provider{auth.NewOktaProvider(flagAuthOktaIssuer, flagAuthOktaClaims...)}
-	login := []*discovery.LoginV1{&discovery.LoginV1{
+	login := staticLogin(&discovery.LoginV1{
 		Client:     flagAuthOktaClientId,
 		GrantTypes: flagLoginGrantTypes,
 		Authz:      flagAuthOktaAuthz,
 		Token:      flagAuthOktaToken,
 		Ports:      flagLoginPorts,
 		Scopes:     flagLoginScopes,
-	},
-	}
+	})
 
 	return p, login
 }
 
-func authMiddleware(ctx context.Context) (endpoint.Middleware, []*discovery.LoginV1, error) {
+// loginSource returns the login configuration to advertise, or nil if it is not available (yet).
+type loginSource func() *discovery.LoginV1
+
+func staticLogin(login *discovery.LoginV1) loginSource {
+	return func() *discovery.LoginV1 { return login }
+}
+
+func authMiddleware(ctx context.Context) (endpoint.Middleware, loginSource, error) {
 	providers := []auth.Provider{}
 
 	if flagAuthStaticTokens != nil {
@@ -522,31 +523,24 @@ func authMiddleware(ctx context.Context) (endpoint.Middleware, []*discovery.Logi
 		return nil, nil, errors.New("both OIDC and Okta are configured, only one is allowed at a time")
 	}
 
-	// We construct the discovery.LoginV1 on this level, as we need the OIDC provider to look up the
-	// authorization and token endpoints dynamically to populate the LoginV1
-	var logins []*discovery.LoginV1
+	// The login configuration is resolved per request, as the OIDC providers look up the
+	// authorization and token endpoints in the background
+	var login loginSource
 	if flagAuthOidcIssuer != "" || len(flagAuthOidc) > 0 || flagAuthOktaIssuer != "" {
 		var ps []auth.Provider
 		if flagAuthOidcIssuer != "" || len(flagAuthOidc) > 0 {
 			var err error
-			ps, logins, err = setupOidc(ctx)
+			ps, login, err = setupOidc(ctx)
 			if err != nil {
 				return nil, nil, err
 			}
 		} else if flagAuthOktaIssuer != "" {
-			ps, logins = setupOkta()
+			ps, login = setupOkta()
 		}
 		providers = append(providers, ps...)
 	}
 
-	// Only validate the first login configuration, as the discovery mechanism only supports one
-	if len(logins) > 0 && logins[0] != nil {
-		if err := logins[0].Validate(); err != nil {
-			return nil, nil, err
-		}
-	}
-
-	return auth.Middleware(providers...), logins, nil
+	return auth.Middleware(providers...), login, nil
 }
 
 func registerMetrics(mux *http.ServeMux) {
@@ -563,27 +557,32 @@ func registerMetrics(mux *http.ServeMux) {
 	mux.Handle("/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
 }
 
-func registerDiscovery(mux *http.ServeMux, logins []*discovery.LoginV1) error {
-	options := []discovery.Option{
-		discovery.WithModulesV1(fmt.Sprintf("%s/", prefixModules)),
-		discovery.WithProvidersV1(fmt.Sprintf("%s/", prefixProviders)),
-	}
-
-	for _, login := range logins {
-		options = append(options, discovery.WithLoginV1(login))
-	}
-
-	terraformJSON, err := json.Marshal(discovery.NewDiscovery(options...))
-	if err != nil {
-		return err
-	}
-
+func registerDiscovery(mux *http.ServeMux, login loginSource) {
 	mux.HandleFunc("/.well-known/terraform.json", func(w http.ResponseWriter, r *http.Request) {
+		options := []discovery.Option{
+			discovery.WithModulesV1(fmt.Sprintf("%s/", prefixModules)),
+			discovery.WithProvidersV1(fmt.Sprintf("%s/", prefixProviders)),
+		}
+
+		if login != nil {
+			if l := login(); l != nil {
+				if err := l.Validate(); err != nil {
+					slog.Warn("omitting invalid login configuration from service discovery", slog.String("err", err.Error()))
+				} else {
+					options = append(options, discovery.WithLoginV1(l))
+				}
+			}
+		}
+
+		terraformJSON, err := json.Marshal(discovery.NewDiscovery(options...))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		w.Header().Add("Content-type", "application/json")
 		w.Write(terraformJSON)
 	})
-
-	return nil
 }
 
 func registerModule(mux *http.ServeMux, s storage.Storage, auth endpoint.Middleware, metrics *o11y.ModuleMetrics, instrumentation o11y.Middleware, proxyUrlService core.ProxyUrlService, auditLogger audit.Logger) error {

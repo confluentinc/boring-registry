@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/boring-registry/boring-registry/pkg/audit"
@@ -16,9 +18,17 @@ type OidcProvider struct {
 	logger             *slog.Logger
 	issuer             string
 	clientIdentifier   string
-	provider           *oidc.Provider
 	acceptNonJWTTokens bool
+	provider           atomic.Pointer[oidc.Provider]
 }
+
+var (
+	oidcDiscoveryTimeout = 15 * time.Second
+	oidcVerifyTimeout    = 10 * time.Second
+	oidcHTTPTimeout      = 10 * time.Second
+	oidcMinBackoff       = time.Second
+	oidcMaxBackoff       = 30 * time.Second
+)
 
 type OidcConfig struct {
 	ClientID           string
@@ -63,9 +73,15 @@ func (o *OidcProvider) Verify(ctx context.Context, token string) error {
 	oidcConfig := &oidc.Config{
 		ClientID: o.clientIdentifier,
 	}
-	verifier := o.provider.VerifierContext(ctx, oidcConfig)
+	provider := o.provider.Load()
+	if provider == nil {
+		return fmt.Errorf("%w: discovery for issuer %s has not completed", core.ErrInvalidToken, o.issuer)
+	}
+	verifier := provider.Verifier(oidcConfig)
 
-	idToken, err := verifier.Verify(ctx, token)
+	verifyCtx, cancel := context.WithTimeout(ctx, oidcVerifyTimeout)
+	defer cancel()
+	idToken, err := verifier.Verify(verifyCtx, token)
 	if err != nil {
 		return fmt.Errorf("%w: %w", core.ErrInvalidToken, err)
 	}
@@ -112,29 +128,51 @@ func (o *OidcProvider) extractUserContext(idToken *oidc.IDToken) (*audit.UserCon
 	), nil
 }
 
-func (o *OidcProvider) AuthURL() string {
-	return o.provider.Endpoint().AuthURL
-}
-
-func (o *OidcProvider) TokenURL() string {
-	return o.provider.Endpoint().TokenURL
-}
-
-func NewOidcProvider(ctx context.Context, issuer, clientIdentifier string, acceptNonJWTTokens bool) (*OidcProvider, error) {
-	logger := slog.Default()
-	start := time.Now()
-	provider, err := oidc.NewProvider(ctx, issuer)
-	if err != nil {
-		return nil, err
+// Endpoints returns the authorization and token URLs once discovery has succeeded.
+func (o *OidcProvider) Endpoints() (authURL, tokenURL string, ok bool) {
+	provider := o.provider.Load()
+	if provider == nil {
+		return "", "", false
 	}
+	endpoint := provider.Endpoint()
+	return endpoint.AuthURL, endpoint.TokenURL, true
+}
 
-	logger.Info("finished initializing OIDC provider", slog.String("took", time.Since(start).String()))
-
-	return &OidcProvider{
-		logger:             logger,
+// NewOidcProvider never blocks or fails; discovery retries in the background until ctx ends.
+func NewOidcProvider(ctx context.Context, issuer, clientIdentifier string, acceptNonJWTTokens bool) *OidcProvider {
+	o := &OidcProvider{
+		logger:             slog.Default(),
 		issuer:             issuer,
 		clientIdentifier:   clientIdentifier,
-		provider:           provider,
 		acceptNonJWTTokens: acceptNonJWTTokens,
-	}, nil
+	}
+	go o.discoverUntilReady(ctx)
+	return o
+}
+
+func (o *OidcProvider) discoverUntilReady(ctx context.Context) {
+	backoff := oidcMinBackoff
+	for {
+		start := time.Now()
+		// The client also bounds later key refreshes, which go-oidc runs without a deadline
+		httpCtx := oidc.ClientContext(ctx, &http.Client{Timeout: oidcHTTPTimeout})
+		discoveryCtx, cancel := context.WithTimeout(httpCtx, oidcDiscoveryTimeout)
+		provider, err := oidc.NewProvider(discoveryCtx, o.issuer)
+		cancel()
+		if err == nil {
+			o.provider.Store(provider)
+			o.logger.Info("finished initializing OIDC provider",
+				slog.String("issuer", o.issuer), slog.String("took", time.Since(start).String()))
+			return
+		}
+
+		o.logger.Warn("OIDC discovery failed, retrying",
+			slog.String("issuer", o.issuer), slog.String("err", err.Error()), slog.String("retry_in", backoff.String()))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, oidcMaxBackoff)
+	}
 }

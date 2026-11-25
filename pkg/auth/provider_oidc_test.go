@@ -2,6 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,10 +13,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/boring-registry/boring-registry/pkg/core"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOidcProviderDiscovery(t *testing.T) {
@@ -39,10 +47,11 @@ func TestOidcProviderDiscovery(t *testing.T) {
 	defer s.Close()
 	issuer = s.URL
 
-	provider, err := NewOidcProvider(context.Background(), issuer, "boring-registry", false)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, provider.AuthURL())
-	assert.NotEmpty(t, provider.TokenURL())
+	provider := newReadyProvider(t, issuer, "boring-registry", false)
+	authURL, tokenURL, ok := provider.Endpoints()
+	assert.True(t, ok)
+	assert.NotEmpty(t, authURL)
+	assert.NotEmpty(t, tokenURL)
 }
 
 func TestOidcProviderGetIssuer(t *testing.T) {
@@ -210,10 +219,9 @@ func TestOidcProviderVerify(t *testing.T) {
 		defer s.Close()
 		issuer = s.URL
 
-		provider, err := NewOidcProvider(context.Background(), issuer, "boring-registry", false)
-		assert.NoError(t, err)
+		provider := newReadyProvider(t, issuer, "boring-registry", false)
 
-		err = provider.Verify(context.Background(), "invalid.jwt.token")
+		err := provider.Verify(context.Background(), "invalid.jwt.token")
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, core.ErrInvalidToken),
 			"OIDC verification failure should wrap core.ErrInvalidToken for 401 status code mapping")
@@ -260,32 +268,34 @@ func TestNewOidcProvider(t *testing.T) {
 		defer s.Close()
 		issuer = s.URL
 
-		provider, err := NewOidcProvider(context.Background(), issuer, "test-client-id", false)
-		assert.NoError(t, err)
+		provider := newReadyProvider(t, issuer, "test-client-id", false)
 		assert.NotNil(t, provider)
 		assert.Equal(t, issuer, provider.GetIssuer())
 		assert.Equal(t, "test-client-id", provider.clientIdentifier)
 		assert.NotNil(t, provider.logger)
-		assert.NotNil(t, provider.provider)
+		assert.NotNil(t, provider.provider.Load())
 		assert.False(t, provider.acceptNonJWTTokens)
 	})
 
-	t.Run("failed provider creation invalid issuer", func(t *testing.T) {
-		provider, err := NewOidcProvider(context.Background(), "http://invalid-url-12345", "test-client-id", false)
-		assert.Error(t, err)
-		assert.Nil(t, provider)
+	t.Run("unreachable issuer does not fail creation", func(t *testing.T) {
+		provider := NewOidcProvider(t.Context(), "http://invalid-url-12345", "test-client-id", false)
+		assert.NotNil(t, provider)
+		_, _, ok := provider.Endpoints()
+		assert.False(t, ok)
+		assert.ErrorIs(t, provider.Verify(t.Context(), "a.b.c"), core.ErrInvalidToken)
 	})
 
-	t.Run("failed provider creation server error", func(t *testing.T) {
+	t.Run("erroring issuer does not fail creation", func(t *testing.T) {
 		hf := func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 		s := httptest.NewServer(http.HandlerFunc(hf))
 		defer s.Close()
 
-		provider, err := NewOidcProvider(context.Background(), s.URL, "test-client-id", false)
-		assert.Error(t, err)
-		assert.Nil(t, provider)
+		provider := NewOidcProvider(t.Context(), s.URL, "test-client-id", false)
+		assert.NotNil(t, provider)
+		_, _, ok := provider.Endpoints()
+		assert.False(t, ok)
 	})
 
 	t.Run("provider with non-JWT token support", func(t *testing.T) {
@@ -310,8 +320,7 @@ func TestNewOidcProvider(t *testing.T) {
 		defer s.Close()
 		issuer = s.URL
 
-		provider, err := NewOidcProvider(context.Background(), issuer, "test-client-id", true)
-		assert.NoError(t, err)
+		provider := newReadyProvider(t, issuer, "test-client-id", true)
 		assert.NotNil(t, provider)
 		assert.True(t, provider.acceptNonJWTTokens)
 	})
@@ -339,12 +348,10 @@ func TestOidcProviderURLs(t *testing.T) {
 	defer s.Close()
 	issuer = s.URL
 
-	provider, err := NewOidcProvider(context.Background(), issuer, "test-client", false)
-	assert.NoError(t, err)
+	provider := newReadyProvider(t, issuer, "test-client", false)
 
-	authURL := provider.AuthURL()
-	tokenURL := provider.TokenURL()
-
+	authURL, tokenURL, ok := provider.Endpoints()
+	assert.True(t, ok)
 	assert.Equal(t, fmt.Sprintf("%s/auth", issuer), authURL)
 	assert.Equal(t, fmt.Sprintf("%s/token", issuer), tokenURL)
 }
@@ -365,4 +372,139 @@ func TestOidcConfig(t *testing.T) {
 	assert.Equal(t, []string{"authorization_code"}, config.LoginGrants)
 	assert.Equal(t, []int{10000, 10010}, config.LoginPorts)
 	assert.True(t, config.AcceptNonJWTTokens)
+}
+
+func newReadyProvider(t *testing.T, issuer, clientID string, acceptNonJWT bool) *OidcProvider {
+	t.Helper()
+	provider := NewOidcProvider(t.Context(), issuer, clientID, acceptNonJWT)
+	require.Eventually(t, func() bool {
+		_, _, ok := provider.Endpoints()
+		return ok
+	}, 5*time.Second, 10*time.Millisecond)
+	return provider
+}
+
+func TestOidcProviderRecoversAfterIssuerComesUp(t *testing.T) {
+	oldMin, oldMax := oidcMinBackoff, oidcMaxBackoff
+	oidcMinBackoff, oidcMaxBackoff = 10*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { oidcMinBackoff, oidcMaxBackoff = oldMin, oldMax })
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	jwk := jose.JSONWebKey{Key: key.Public(), KeyID: "k1", Algorithm: "ES256", Use: "sig"}
+
+	var up atomic.Bool
+	var issuer string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer,
+			"jwks_uri":                              issuer + "/keys",
+			"id_token_signing_alg_values_supported": []string{"ES256"},
+		})
+	})
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}})
+	})
+	s := httptest.NewServer(mux)
+	defer s.Close()
+	issuer = s.URL
+
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: "k1"}}, nil)
+	require.NoError(t, err)
+	payload, err := json.Marshal(map[string]any{
+		"iss": issuer,
+		"sub": "argo",
+		"aud": "registry",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	require.NoError(t, err)
+	jws, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := jws.CompactSerialize()
+	require.NoError(t, err)
+
+	provider := NewOidcProvider(t.Context(), issuer, "registry", false)
+	assert.ErrorIs(t, provider.Verify(t.Context(), token), core.ErrInvalidToken)
+
+	time.Sleep(100 * time.Millisecond)
+	assert.ErrorIs(t, provider.Verify(t.Context(), token), core.ErrInvalidToken)
+
+	up.Store(true)
+	require.Eventually(t, func() bool {
+		return provider.Verify(t.Context(), token) == nil
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestOidcProviderKeyFetchOutageAfterDiscovery(t *testing.T) {
+	oldVerify, oldHTTP := oidcVerifyTimeout, oidcHTTPTimeout
+	oidcVerifyTimeout, oidcHTTPTimeout = 200*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { oidcVerifyTimeout, oidcHTTPTimeout = oldVerify, oldHTTP })
+
+	known, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	rotated, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	var keysHang, rotatedPublished atomic.Bool
+	var issuer string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer,
+			"jwks_uri":                              issuer + "/keys",
+			"id_token_signing_alg_values_supported": []string{"ES256"},
+		})
+	})
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		if keysHang.Load() {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		keys := []jose.JSONWebKey{{Key: known.Public(), KeyID: "known", Algorithm: "ES256", Use: "sig"}}
+		if rotatedPublished.Load() {
+			keys = append(keys, jose.JSONWebKey{Key: rotated.Public(), KeyID: "rotated", Algorithm: "ES256", Use: "sig"})
+		}
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: keys})
+	})
+	s := httptest.NewServer(mux)
+	defer s.Close()
+	issuer = s.URL
+
+	sign := func(key *ecdsa.PrivateKey, kid string) string {
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: kid}}, nil)
+		require.NoError(t, err)
+		payload, err := json.Marshal(map[string]any{"iss": issuer, "sub": "argo", "aud": "registry", "exp": time.Now().Add(time.Hour).Unix()})
+		require.NoError(t, err)
+		jws, err := signer.Sign(payload)
+		require.NoError(t, err)
+		token, err := jws.CompactSerialize()
+		require.NoError(t, err)
+		return token
+	}
+
+	provider := newReadyProvider(t, issuer, "registry", false)
+	knownToken, rotatedToken := sign(known, "known"), sign(rotated, "rotated")
+	assert.NoError(t, provider.Verify(t.Context(), knownToken))
+	time.Sleep(100 * time.Millisecond)
+
+	keysHang.Store(true)
+	assert.NoError(t, provider.Verify(t.Context(), knownToken), "cached keys keep working during an outage")
+
+	start := time.Now()
+	assert.ErrorIs(t, provider.Verify(t.Context(), rotatedToken), core.ErrInvalidToken)
+	assert.Less(t, time.Since(start), 2*time.Second, "a hung key endpoint must not hang the request")
+
+	keysHang.Store(false)
+	rotatedPublished.Store(true)
+	require.Eventually(t, func() bool {
+		return provider.Verify(t.Context(), rotatedToken) == nil
+	}, 5*time.Second, 50*time.Millisecond, "key refresh recovers after the outage")
 }

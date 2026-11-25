@@ -8,19 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/boring-registry/boring-registry/pkg/discovery"
 	"github.com/stretchr/testify/assert"
 )
-
-func findLoginByClient(logins []*discovery.LoginV1, clientID []string) bool {
-	for index, login := range logins {
-		if login.Client != clientID[index] {
-			return false
-		}
-	}
-	return true
-}
 
 func TestAuthMiddleware(t *testing.T) {
 	data := `{
@@ -100,31 +91,31 @@ func TestAuthMiddleware(t *testing.T) {
 		flagAuthOktaToken = test.authOktaToken
 		flagAuthOidc = test.authOidc
 
-		mw, logins, err := authMiddleware(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		mw, login, err := authMiddleware(ctx)
 		if test.wantErr {
 			assert.Error(t, err)
 			assert.ErrorContains(t, err, test.errMessage)
 		} else {
 			assert.NoError(t, err)
-			if assert.NotNil(t, logins) {
+			assert.NotNil(t, mw)
+			if assert.NotNil(t, login) {
+				wantClient := test.authOktaClientId
 				if len(test.authOidc) > 0 {
-					assert.True(t, findLoginByClient(logins, test.expectedOidcClients), "Expected clients not found in logins")
+					wantClient = test.expectedOidcClients[0]
 				} else if test.authOidcIssuer != "" {
-					assert.True(t, findLoginByClient(logins, []string{test.authOidcClientId}), "Expected client not found in logins")
-				} else if test.authOktaIssuer != "" {
-					assert.True(t, findLoginByClient(logins, []string{test.authOktaClientId}), "Expected client not found in logins")
+					wantClient = test.authOidcClientId
 				}
 
-				for _, login := range logins {
-					if test.authOidcIssuer != "" || test.authOktaIssuer != "" {
-						assert.NotEmpty(t, login.Authz)
-						assert.NotEmpty(t, login.Token)
-						assert.NotEmpty(t, login.GrantTypes)
-						assert.NotEmpty(t, login.Ports)
-					}
-				}
+				assert.Eventually(t, func() bool { return login() != nil }, 5*time.Second, 10*time.Millisecond)
+				l := login()
+				assert.Equal(t, wantClient, l.Client)
+				assert.NotEmpty(t, l.Authz)
+				assert.NotEmpty(t, l.Token)
+				assert.NotEmpty(t, l.GrantTypes)
+				assert.NotEmpty(t, l.Ports)
 			}
-			assert.NotNil(t, mw)
 		}
+		cancel()
 	}
 }
