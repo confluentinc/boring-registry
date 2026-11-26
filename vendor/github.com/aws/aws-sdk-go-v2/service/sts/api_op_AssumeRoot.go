@@ -4,15 +4,16 @@ package sts
 
 import (
 	"context"
-	"fmt"
-	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
+	"github.com/aws/aws-sdk-go-v2/service/sts/schemas"
 	"github.com/aws/aws-sdk-go-v2/service/sts/types"
+	smithy "github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/middleware"
-	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 // Returns a set of short term credentials you can use to perform privileged tasks
-// on a member account in your organization.
+// on a member account in your organization. You must use credentials from an
+// Organizations management account or a delegated administrator account for IAM to
+// call AssumeRoot . You cannot use root user credentials to make this call.
 //
 // Before you can launch a privileged session, you must have centralized root
 // access in your organization. For steps to enable this feature, see [Centralize root access for member accounts]in the IAM
@@ -24,8 +25,16 @@ import (
 // You can track AssumeRoot in CloudTrail logs to determine what actions were
 // performed in a session. For more information, see [Track privileged tasks in CloudTrail]in the IAM User Guide.
 //
+// When granting access to privileged tasks you should only grant the necessary
+// permissions required to perform that task. For more information, see [Security best practices in IAM]. In
+// addition, you can use [service control policies](SCPs) to manage and limit permissions in your
+// organization. See [General examples]in the Organizations User Guide for more information on SCPs.
+//
 // [Endpoints]: https://docs.aws.amazon.com/STS/latest/APIReference/welcome.html#sts-endpoints
+// [Security best practices in IAM]: https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
 // [Track privileged tasks in CloudTrail]: https://docs.aws.amazon.com/IAM/latest/UserGuide/cloudtrail-track-privileged-tasks.html
+// [General examples]: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps_examples_general.html
+// [service control policies]: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
 // [Centralize root access for member accounts]: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-enable-root-access.html
 func (c *Client) AssumeRoot(ctx context.Context, params *AssumeRootInput, optFns ...func(*Options)) (*AssumeRootOutput, error) {
 	if params == nil {
@@ -50,8 +59,10 @@ type AssumeRootInput struct {
 	TargetPrincipal *string
 
 	// The identity based policy that scopes the session to the privileged tasks that
-	// can be performed. You can use one of following Amazon Web Services managed
-	// policies to scope root session actions.
+	// can be performed. You must
+	//
+	// use one of following Amazon Web Services managed policies to scope root session
+	// actions:
 	//
 	// [IAMAuditRootUserCredentials]
 	//
@@ -79,7 +90,36 @@ type AssumeRootInput struct {
 	// By default, the value is set to 900 seconds.
 	DurationSeconds *int32
 
+	// The minimum size, in bytes, of the session token that STS issues for the
+	// request. STS increases the session token to at least this size, regardless of
+	// its actual content. The value must not exceed 4,096 bytes. When set to 0 or not
+	// specified, the session token size is unchanged.
+	MinimumSessionTokenSize *int32
+
 	noSmithyDocumentSerde
+}
+
+func (v *AssumeRootInput) Serialize(s smithy.ShapeSerializer) {
+	s.WriteStruct(schemas.AssumeRootRequest)
+	v.SerializeMembers(s)
+	s.CloseStruct()
+}
+
+func (v *AssumeRootInput) SerializeMembers(s smithy.ShapeSerializer) {
+	if v.DurationSeconds != nil {
+		s.WriteInt32(schemas.AssumeRootRequest_DurationSeconds, *v.DurationSeconds)
+	}
+	if v.MinimumSessionTokenSize != nil {
+		s.WriteInt32(schemas.AssumeRootRequest_MinimumSessionTokenSize, *v.MinimumSessionTokenSize)
+	}
+	if v.TargetPrincipal != nil {
+		s.WriteString(schemas.AssumeRootRequest_TargetPrincipal, *v.TargetPrincipal)
+	}
+	if v.TaskPolicyArn != nil {
+		s.WriteStruct(schemas.AssumeRootRequest_TaskPolicyArn)
+		v.TaskPolicyArn.SerializeMembers(s)
+		s.CloseStruct()
+	}
 }
 
 type AssumeRootOutput struct {
@@ -90,6 +130,14 @@ type AssumeRootOutput struct {
 	// The size of the security token that STS API operations return is not fixed. We
 	// strongly recommend that you make no assumptions about the maximum size.
 	Credentials *types.Credentials
+
+	// The size, in bytes, of the session token returned in the Credentials for this
+	// response.
+	SessionTokenSize *int32
+
+	// The percentage (0-100) of the maximum allowed session token size that the
+	// returned session token consumes.
+	SessionTokenUtilization *int32
 
 	// The source identity specified by the principal that is calling the AssumeRoot
 	// operation.
@@ -111,80 +159,68 @@ type AssumeRootOutput struct {
 	noSmithyDocumentSerde
 }
 
+func (v *AssumeRootOutput) Serialize(s smithy.ShapeSerializer) {
+	s.WriteStruct(schemas.AssumeRootResponse)
+	v.SerializeMembers(s)
+	s.CloseStruct()
+}
+
+func (v *AssumeRootOutput) SerializeMembers(s smithy.ShapeSerializer) {
+	if v.Credentials != nil {
+		s.WriteStruct(schemas.AssumeRootResponse_Credentials)
+		v.Credentials.SerializeMembers(s)
+		s.CloseStruct()
+	}
+	if v.SessionTokenSize != nil {
+		s.WriteInt32(schemas.AssumeRootResponse_SessionTokenSize, *v.SessionTokenSize)
+	}
+	if v.SessionTokenUtilization != nil {
+		s.WriteInt32(schemas.AssumeRootResponse_SessionTokenUtilization, *v.SessionTokenUtilization)
+	}
+	if v.SourceIdentity != nil {
+		s.WriteString(schemas.AssumeRootResponse_SourceIdentity, *v.SourceIdentity)
+	}
+}
+func (v *AssumeRootOutput) Deserialize(d smithy.ShapeDeserializer) error {
+	return smithy.ReadStruct(d, schemas.AssumeRootResponse, func(s *smithy.Schema) error {
+		switch s {
+		case schemas.AssumeRootResponse_Credentials:
+			v.Credentials = &types.Credentials{}
+			return v.Credentials.Deserialize(d)
+		case schemas.AssumeRootResponse_SessionTokenSize:
+			v.SessionTokenSize = new(int32)
+			return d.ReadInt32(schemas.AssumeRootResponse_SessionTokenSize, v.SessionTokenSize)
+		case schemas.AssumeRootResponse_SessionTokenUtilization:
+			v.SessionTokenUtilization = new(int32)
+			return d.ReadInt32(schemas.AssumeRootResponse_SessionTokenUtilization, v.SessionTokenUtilization)
+		case schemas.AssumeRootResponse_SourceIdentity:
+			v.SourceIdentity = new(string)
+			return d.ReadString(schemas.AssumeRootResponse_SourceIdentity, v.SourceIdentity)
+		}
+		return nil
+	})
+}
 func (c *Client) addOperationAssumeRootMiddlewares(stack *middleware.Stack, options Options) (err error) {
-	if err := stack.Serialize.Add(&setOperationInputMiddleware{}, middleware.After); err != nil {
+	if err := stack.Serialize.Add(&serializeRequestMiddleware{options: &options, operationSchema: smithy.NewOperationSchema(schemas.AssumeRoot, schemas.AssumeRootRequest, schemas.AssumeRootResponse)}, middleware.After); err != nil {
 		return err
 	}
-	err = stack.Serialize.Add(&awsAwsquery_serializeOpAssumeRoot{}, middleware.After)
-	if err != nil {
+	if err := stack.Deserialize.Add(&deserializeResponseMiddleware{options: &options, operationSchema: smithy.NewOperationSchema(schemas.AssumeRoot, schemas.AssumeRootRequest, schemas.AssumeRootResponse), output: &AssumeRootOutput{}}, middleware.After); err != nil {
 		return err
-	}
-	err = stack.Deserialize.Add(&awsAwsquery_deserializeOpAssumeRoot{}, middleware.After)
-	if err != nil {
-		return err
-	}
-	if err := addProtocolFinalizerMiddlewares(stack, options, "AssumeRoot"); err != nil {
-		return fmt.Errorf("add protocol finalizers: %v", err)
 	}
 
-	if err = addlegacyEndpointContextSetter(stack, options); err != nil {
-		return err
-	}
-	if err = addSetLoggerMiddleware(stack, options); err != nil {
-		return err
-	}
-	if err = addClientRequestID(stack); err != nil {
-		return err
-	}
-	if err = addComputeContentLength(stack); err != nil {
-		return err
-	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
 	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetry(stack, options); err != nil {
-		return err
-	}
-	if err = addRawResponseToMetadata(stack); err != nil {
-		return err
-	}
-	if err = addRecordResponseTiming(stack); err != nil {
-		return err
-	}
-	if err = addSpanRetryLoop(stack, options); err != nil {
-		return err
-	}
-	if err = addClientUserAgent(stack, options); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
-		return err
-	}
-	if err = addTimeOffsetBuild(stack, c); err != nil {
-		return err
-	}
-	if err = addUserAgentRetryMode(stack, options); err != nil {
+	if err = addRecordResponseTiming(stack, options); err != nil {
 		return err
 	}
 	if err = addCredentialSource(stack, options); err != nil {
 		return err
 	}
 	if err = addOpAssumeRootValidationMiddleware(stack); err != nil {
-		return err
-	}
-	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opAssumeRoot(options.Region), middleware.Before); err != nil {
-		return err
-	}
-	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addRequestIDRetrieverMiddleware(stack); err != nil {
@@ -199,25 +235,8 @@ func (c *Client) addOperationAssumeRootMiddlewares(stack *middleware.Stack, opti
 	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = addSpanInitializeStart(stack); err != nil {
-		return err
-	}
-	if err = addSpanInitializeEnd(stack); err != nil {
-		return err
-	}
-	if err = addSpanBuildRequestStart(stack); err != nil {
-		return err
-	}
-	if err = addSpanBuildRequestEnd(stack); err != nil {
+	if err = addInterceptors(stack, options); err != nil {
 		return err
 	}
 	return nil
-}
-
-func newServiceMetadataMiddleware_opAssumeRoot(region string) *awsmiddleware.RegisterServiceMetadata {
-	return &awsmiddleware.RegisterServiceMetadata{
-		Region:        region,
-		ServiceID:     ServiceID,
-		OperationName: "AssumeRoot",
-	}
 }
